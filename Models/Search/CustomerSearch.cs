@@ -38,6 +38,12 @@ namespace Kovai.Churn360.Customers.Core.Models
     {
         private Dictionary<string, object> _dictionary = new Dictionary<string, object> { };
 
+        public object this[string name]
+        {
+            get { return _dictionary[name]; }
+            set { SetProperty(name, value); }
+        }
+
         public override bool TryGetMember(GetMemberBinder binder, out object result)
         {
             return _dictionary.TryGetValue(binder.Name, out result);
@@ -60,7 +66,7 @@ namespace Kovai.Churn360.Customers.Core.Models
 
         public object GetProperty(string name)
         {
-            return _dictionary;
+            return _dictionary[name];
         }
 
         public string ToJson() {

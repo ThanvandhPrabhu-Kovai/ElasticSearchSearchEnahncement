@@ -632,7 +632,8 @@ namespace QueryEditor.Services.ElasticSearch
             {
                 var source = hit.Source as Dictionary<string, object>;
                 var customer = new CustomerSearch();
-                source.Keys.ToList().ForEach((key) => {
+                source.Keys.ToList().ForEach((key) =>
+                {
                     customer.SetProperty(key, source[key]);
                 });
 
@@ -641,15 +642,18 @@ namespace QueryEditor.Services.ElasticSearch
                 var children = new List<object> { };
                 string nestedPath = string.Empty;
 
+                var currentInnerHits = innerHits;
+
                 innerHits.ToList().ForEach((innerHit) =>
                 {
                     nestedPath = innerHit.Key;
                     var matches = innerHit.Value.Hits.Hits.Select(_ => _.Source.As<object>()).ToList<object>();
                     children = matches;
+                    customer[nestedPath] = children;
                 });
-                customer.SetProperty(nestedPath, children);
 
                 parentsWithFilteredChildren.Add(customer);
+                var name = customer["name"];
             }
 
             return parentsWithFilteredChildren;
