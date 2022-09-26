@@ -1,17 +1,26 @@
-﻿using QueryEditor.Models;
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Dynamic;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
 namespace Kovai.Churn360.Customers.Core.Models
 {
-    public class DynamicCustomerConverter : JsonConverter<CustomerSearch>
+    internal class CustomerSearchConverter : JsonConverter<CustomerSearch>
     {
         public override CustomerSearch Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
         {
-            throw new NotImplementedException();
+            var customerSearch = new CustomerSearch();
+            using (var jsonDoc = JsonDocument.ParseValue(ref reader))
+            {
+                var dictionary = jsonDoc.RootElement.EnumerateObject()
+                                .ToDictionary(k => k.Name, v => v.Value.Clone());
+                dictionary.Keys.ToList().ForEach((key) => {
+                    customerSearch.SetProperty(key, dictionary[key]);
+                });
+            }
+            return customerSearch;
         }
 
         public override void Write(Utf8JsonWriter writer, CustomerSearch value, JsonSerializerOptions options)
@@ -36,7 +45,7 @@ namespace Kovai.Churn360.Customers.Core.Models
 
         public override bool TrySetMember(SetMemberBinder binder, object value)
         {
-            AddProperty(binder.Name, value);
+            SetProperty(binder.Name, value);
             return true;
         }
 
@@ -44,7 +53,7 @@ namespace Kovai.Churn360.Customers.Core.Models
             return _dictionary;
         }
 
-        public void AddProperty(string name, object value)
+        public void SetProperty(string name, object value)
         {
             _dictionary[name] = value;
         }
@@ -52,6 +61,23 @@ namespace Kovai.Churn360.Customers.Core.Models
         public object GetProperty(string name)
         {
             return _dictionary;
+        }
+
+        public string ToJson() {
+            return JsonSerializer.Serialize(this._dictionary, new JsonSerializerOptions() {
+                WriteIndented = true,
+                Converters = {
+                    new CustomerSearchConverter()
+                 },
+            });
+        }
+
+        public CustomerSearch FromJson(string json) {
+            return JsonSerializer.Deserialize<CustomerSearch>(json, new JsonSerializerOptions() {
+                Converters = {
+                    new CustomerSearchConverter()
+                 },
+            });
         }
     }
 

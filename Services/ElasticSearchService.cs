@@ -566,7 +566,7 @@ namespace QueryEditor.Services.ElasticSearch
 
         public static async Task<List<CustomerSearch>> SearchAsync(ElasticClient elasticClient)
         {
-            var request = new Nest.SearchRequest<CustomerSearch>
+            var request = new Nest.SearchRequest<object>
             {
                 Query = new BoolQuery
                 {
@@ -614,23 +614,28 @@ namespace QueryEditor.Services.ElasticSearch
 
             using (var stream = new MemoryStream())
             {
-                elasticClient.RequestResponseSerializer.Serialize<SearchRequest<CustomerSearch>>(request, stream);
+                elasticClient.RequestResponseSerializer.Serialize<SearchRequest<object>>(request, stream);
                 stream.Position = 0;
 
                 using var reader = new StreamReader(stream);
                 requestJson = reader.ReadToEnd();
             }
 
-            var response = await elasticClient.SearchAsync<CustomerSearch>(request);
+            var response = await elasticClient.SearchAsync<object>(request);
 
             var parents = response.Hits.Select(_ => _.Source).ToList();
             var parentsWithFilteredChildren = new List<CustomerSearch> { };
 
             var sourceType = response.Hits.GetType().GetGenericArguments().Single();
 
-            foreach (IHit<CustomerSearch> hit in response.Hits.ToList())
+            foreach (IHit<object> hit in response.Hits.ToList())
             {
-                var source = hit.Source;
+                var source = hit.Source as Dictionary<string, object>;
+                var customer = new CustomerSearch();
+                source.Keys.ToList().ForEach((key) => {
+                    customer.SetProperty(key, source[key]);
+                });
+
                 var innerHits = hit.InnerHits;
                 var keys = innerHits.Keys;
                 var children = new List<object> { };
@@ -640,26 +645,11 @@ namespace QueryEditor.Services.ElasticSearch
                 {
                     nestedPath = innerHit.Key;
                     var matches = innerHit.Value.Hits.Hits.Select(_ => _.Source.As<object>()).ToList<object>();
-                    children.AddRange(matches);
+                    children = matches;
                 });
+                customer.SetProperty(nestedPath, children);
 
-                var cap = nestedPath[0].ToString().ToUpper()[0];
-                var fieldName = nestedPath
-                                .Remove(0, 1)
-                                .Insert(0, cap.ToString());
-                var propertyType = sourceType.GetProperty(fieldName);
-                var destType = propertyType.PropertyType;
-                var args = destType.GenericTypeArguments.First();
-
-                if (children.Any())
-                {
-                    var propInfo = sourceType.GetProperty(fieldName);
-                    if (propInfo != null)
-                    {
-                        var value = propInfo.GetValue(source);
-                        propInfo.SetValue(source, children);
-                    }
-                }
+                parentsWithFilteredChildren.Add(customer);
             }
 
             return parentsWithFilteredChildren;
