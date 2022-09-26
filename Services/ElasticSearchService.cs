@@ -637,23 +637,30 @@ namespace QueryEditor.Services.ElasticSearch
                     customer.SetProperty(key, source[key]);
                 });
 
-                var innerHits = hit.InnerHits;
-                var keys = innerHits.Keys;
-                var children = new List<object> { };
+                var currentInnerHits = hit.InnerHits;
                 string nestedPath = string.Empty;
 
-                var currentInnerHits = innerHits;
+                do {
+                    IReadOnlyDictionary<string, InnerHitsResult> nestedInnerHits = null;
 
-                innerHits.ToList().ForEach((innerHit) =>
-                {
-                    nestedPath = innerHit.Key;
-                    var matches = innerHit.Value.Hits.Hits.Select(_ => _.Source.As<object>()).ToList<object>();
-                    children = matches;
-                    customer[nestedPath] = children;
-                });
+                    currentInnerHits.ToList().ForEach((innerHit) =>
+                    {
+                        nestedPath = innerHit.Key;
+
+                        var matches = innerHit.Value.Hits.Hits.Select(_ =>
+                        {
+                            nestedInnerHits = _.InnerHits;
+                            return _.Source.As<object>();
+                        }).ToList<object>();
+
+                        customer[nestedPath] = matches;
+                    });
+
+                    currentInnerHits = nestedInnerHits;
+
+                } while (currentInnerHits != null);
 
                 parentsWithFilteredChildren.Add(customer);
-                var name = customer["name"];
             }
 
             return parentsWithFilteredChildren;
