@@ -15,6 +15,7 @@ namespace QueryEditor
         {
             ElasticClient elasticClient = ElasticSearchService.GetElasticClient();
             ElasticSearchService elasticSearch = new ElasticSearchService();
+            ElasticSearchService.IndexMapping = ElasticSearchService.GetMapping(elasticClient);
 
             var customerIds = new List<string> { };
 
@@ -28,6 +29,8 @@ namespace QueryEditor
                         EndDate = new DateTime(2022,12,12).Date,
                     }),
                 });
+
+            var request = ElasticSearchService.ConstructSearchRequest(elasticClient, searchRequest);
 
             var searchRes = await ElasticSearchService.SearchAsync(elasticClient);
 

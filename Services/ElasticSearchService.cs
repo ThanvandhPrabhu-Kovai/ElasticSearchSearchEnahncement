@@ -18,7 +18,7 @@ namespace QueryEditor.Services.ElasticSearch
 {
     public class ElasticSearchService
     {
-        protected static IProperties IndexMapping { get; set; }
+        public static IProperties IndexMapping { get; set; }
 
         private const string ElasticSearchClusterUri = "http://localhost:9200";
 
@@ -87,7 +87,7 @@ namespace QueryEditor.Services.ElasticSearch
             return customers;
         }
 
-        private static SearchRequest<CustomerSearch> ConstructSearchRequest(
+        public static SearchRequest<CustomerSearch> ConstructSearchRequest(
             ElasticClient elasticClient,
             SearchReq searchRequest)
         {
@@ -256,145 +256,6 @@ namespace QueryEditor.Services.ElasticSearch
             };
         }
 
-        /// <summary>
-        /// Constructs a search query.
-        /// </summary>
-        /// <param name="searchText">Text to search for.</param>
-        /// <param name="filterDefinitions">Filter definitions to be applied.</param>
-        /// <returns>Constructed search query.</returns>
-        private static BoolQuery ConstructSearchQuery(
-            string searchText,
-            IEnumerable<string> searchFields,
-            IEnumerable<IFilterDefinition> filterDefinitions)
-        {
-            var filters = new List<QueryContainer>();
-
-            if (searchFields != null && searchFields.Any())
-            {
-                filters.AddRange(
-                    ConstructSearchFieldsFilter(
-                        searchText,
-                        searchFields));
-            }
-
-            filters.AddRange(AddFilters(filterDefinitions, LogicalOperator.AND));
-
-            var query = new BoolQuery
-            {
-                Must = filters,
-            };
-
-            return query;
-        }
-
-        private static ICollection<QueryContainer> AddFilters(
-            IEnumerable<IFilterDefinition> filterDefinitions,
-            LogicalOperator logicalOperator)
-        {
-            var queries = new List<QueryContainer>();
-
-            if (filterDefinitions == null || !filterDefinitions.Any())
-            {
-                return queries;
-            }
-
-            var rootQuery = new NestedItem();
-
-            foreach (var filterDefinition in filterDefinitions)
-            {
-                NestedItem parent;
-
-                if (filterDefinition is FilterDefinition)
-                {
-                    parent = GetParent(rootQuery, filterDefinition as FilterDefinition);
-                }
-                else
-                {
-                    parent = rootQuery;
-                }
-
-                parent.Queries.Add(GetQuery(filterDefinition));
-            }
-
-            queries.AddRange(rootQuery.Queries);
-
-            foreach (var child in rootQuery.NestedChildren)
-            {
-                GetNestedQueries(logicalOperator, queries, child);
-            }
-
-            return queries;
-        }
-
-        private static void GetNestedQueries(
-            LogicalOperator logicalOperator,
-            List<QueryContainer> queries,
-            NestedItem child)
-        {
-            var containerForChildren = queries;
-
-            if (child.Queries.Any() == true)
-            {
-                var boolQuery = FilterConstructorService.ConstructNestedQuery(
-                    child.Path,
-                    GetBoolQuery(logicalOperator, child.Queries));
-
-                queries.Add(boolQuery);
-            }
-
-            foreach (var grandChild in child.NestedChildren)
-            {
-                GetNestedQueries(
-                    logicalOperator,
-                    containerForChildren,
-                    grandChild);
-            }
-        }
-
-        private static QueryContainer GetQuery(IFilterDefinition filterDefinition)
-        {
-            switch (filterDefinition)
-            {
-                case FilterGroup filterGroup:
-                    {
-                        var filters = AddFilters(
-                            filterGroup.Filters,
-                            filterGroup.LogicalOperator);
-
-                        return GetBoolQuery(filterGroup.LogicalOperator, filters);
-                    }
-
-                case FilterDefinition childFilterDefinition:
-                    {
-                        return FilterConstructorService.ConstructFilterDefinitionFilter(childFilterDefinition);
-                    }
-            }
-
-            return null;
-        }
-
-        private static BoolQuery GetBoolQuery(
-            LogicalOperator logicalOperator,
-            ICollection<QueryContainer> filters)
-        {
-            var boolQuery = new BoolQuery();
-
-            switch (logicalOperator)
-            {
-                case LogicalOperator.ANDNOT:
-                    boolQuery.MustNot = filters;
-                    break;
-                case LogicalOperator.OR:
-                    boolQuery.Should = filters;
-                    break;
-                default:
-                    boolQuery.Must = filters;
-                    break;
-            }
-
-            return boolQuery;
-        }
-
         private static List<QueryContainer> ConstructSearchFieldsFilter(string searchText, IEnumerable<string> searchFields)
         {
             var queries = new List<QueryContainer>();
@@ -435,7 +296,7 @@ namespace QueryEditor.Services.ElasticSearch
             return queries;
         }
 
-        private class NestedItem
+        public class NestedItem
         {
             public NestedItem()
             {
@@ -450,7 +311,7 @@ namespace QueryEditor.Services.ElasticSearch
             public ICollection<QueryContainer> Queries { get; set; }
         }
 
-        private static IProperties GetMapping(ElasticClient elastic)
+        public static IProperties GetMapping(ElasticClient elastic)
         {
             if (elastic == null)
             {
@@ -471,7 +332,6 @@ namespace QueryEditor.Services.ElasticSearch
 
             return mapping.Properties;
         }
-
 
         private static NestedItem GetParent(
             NestedItem nestedItem,
@@ -706,5 +566,139 @@ namespace QueryEditor.Services.ElasticSearch
                 FindExactMatches = true,
             };
         }
+
+        public static BoolQuery ConstructSearchQuery(
+            string searchText,
+            IEnumerable<string> searchFields,
+            IEnumerable<IFilterDefinition> filterDefinitions)
+        {
+            var filters = new List<QueryContainer>();
+
+            if (searchFields != null && searchFields.Any())
+            {
+                filters.AddRange(
+                    ConstructSearchFieldsFilter(
+                        searchText,
+                        searchFields));
+            }
+
+            filters.AddRange(AddFilters(filterDefinitions, LogicalOperator.AND));
+
+            var query = new BoolQuery
+            {
+                Must = filters,
+            };
+
+            return query;
+        }
+
+        public static ICollection<QueryContainer> AddFilters(
+            IEnumerable<IFilterDefinition> filterDefinitions,
+            LogicalOperator logicalOperator)
+        {
+            var queries = new List<QueryContainer>();
+
+            if (filterDefinitions == null || !filterDefinitions.Any())
+            {
+                return queries;
+            }
+
+            var rootQuery = new NestedItem();
+
+            foreach (var filterDefinition in filterDefinitions)
+            {
+                NestedItem parent;
+
+                if (filterDefinition is FilterDefinition)
+                {
+                    parent = GetParent(rootQuery, filterDefinition as FilterDefinition);
+                }
+                else
+                {
+                    parent = rootQuery;
+                }
+
+                parent.Queries.Add(GetQuery(filterDefinition));
+            }
+
+            queries.AddRange(rootQuery.Queries);
+
+            foreach (var child in rootQuery.NestedChildren)
+            {
+                GetNestedQueries(logicalOperator, queries, child);
+            }
+
+            return queries;
+        }
+
+        public static void GetNestedQueries(
+            LogicalOperator logicalOperator,
+            List<QueryContainer> queries,
+            NestedItem child)
+        {
+            var containerForChildren = queries;
+
+            if (child.Queries.Any() == true)
+            {
+                var boolQuery = FilterConstructorService.ConstructNestedQuery(
+                    child.Path,
+                    GetBoolQuery(logicalOperator, child.Queries));
+
+                queries.Add(boolQuery);
+            }
+
+            foreach (var grandChild in child.NestedChildren)
+            {
+                GetNestedQueries(
+                    logicalOperator,
+                    containerForChildren,
+                    grandChild);
+            }
+        }
+
+        public static QueryContainer GetQuery(IFilterDefinition filterDefinition)
+        {
+            switch (filterDefinition)
+            {
+                case FilterGroup filterGroup:
+                    {
+                        var filters = AddFilters(
+                            filterGroup.Filters,
+                            filterGroup.LogicalOperator);
+
+                        return GetBoolQuery(filterGroup.LogicalOperator, filters);
+                    }
+
+                case FilterDefinition childFilterDefinition:
+                    {
+                        return FilterConstructorService.ConstructFilterDefinitionFilter(childFilterDefinition);
+                    }
+            }
+
+            return null;
+        }
+
+        public static BoolQuery GetBoolQuery(
+            LogicalOperator logicalOperator,
+            ICollection<QueryContainer> filters)
+        {
+            var boolQuery = new BoolQuery();
+
+            switch (logicalOperator)
+            {
+                case LogicalOperator.ANDNOT:
+                    boolQuery.MustNot = filters;
+                    break;
+                case LogicalOperator.OR:
+                    boolQuery.Should = filters;
+                    break;
+                default:
+                    boolQuery.Must = filters;
+                    break;
+            }
+
+            return boolQuery;
+        }
+
     }
 }
