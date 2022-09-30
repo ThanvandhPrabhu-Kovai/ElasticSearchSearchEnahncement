@@ -22,7 +22,7 @@ namespace QueryEditor.Services.ElasticSearch
 
         private const string ElasticSearchClusterUri = "http://localhost:9200";
 
-        private const string IndexNameCustomers = "18455014ef7f413c8be61acca225d24e-customers";
+        private const string IndexNameCustomers = "18455014ef7f413c8be61acca225d24e-customers-test";
 
         private static ConnectionSettings GetElasticSearchConnectionSettings(StaticConnectionPool connectionPool) => new ConnectionSettings(connectionPool)
                                                   .DisableDirectStreaming()
@@ -104,7 +104,7 @@ namespace QueryEditor.Services.ElasticSearch
             elasticSearchRequest.Query = ConstructSearchQuery(
                 searchRequest.Query,
                 searchRequest.Fields,
-                searchRequest.FilterDefinitions);
+                searchRequest.Filters);
 
             AddSorting(searchRequest, elasticSearchRequest);
 
@@ -324,7 +324,7 @@ namespace QueryEditor.Services.ElasticSearch
                 return null;
             }
 
-            var mapping = mappings.Indices["18455014ef7f413c8be61acca225d24e-customers"].Mappings;
+            var mapping = mappings.Indices["18455014ef7f413c8be61acca225d24e-customers-test"].Mappings;
             if (mapping == null)
             {
                 return null;
@@ -339,6 +339,7 @@ namespace QueryEditor.Services.ElasticSearch
         {
             var path = filterDefinition.Field;
             var parts = path.Split('.').ToList();
+            string previousParentPath = null;
             string currentPath = null;
             var parent = nestedItem;
             var nestedParents = nestedItem.NestedChildren;
@@ -347,6 +348,7 @@ namespace QueryEditor.Services.ElasticSearch
 
             foreach (var part in parts)
             {
+                previousParentPath = currentPath;
                 currentPath = (currentPath != null ? currentPath + "." : currentPath) + part;
 
                 var propertyInfo = properties.ContainsKey(part)
@@ -500,7 +502,8 @@ namespace QueryEditor.Services.ElasticSearch
                 var currentInnerHits = hit.InnerHits;
                 string nestedPath = string.Empty;
 
-                do {
+                do
+                {
                     IReadOnlyDictionary<string, InnerHitsResult> nestedInnerHits = null;
 
                     currentInnerHits.ToList().ForEach((innerHit) =>
@@ -567,6 +570,17 @@ namespace QueryEditor.Services.ElasticSearch
             };
         }
 
+        public static FilterDefinition ConstructFilterDefinitionForResponderSentiment()
+        {
+            return new FilterDefinition
+            {
+                Field = "contacts.campaigns.response.responderSentiment",
+                LogicalOperator = LogicalOperator.AND,
+                Value = "passives",
+                FindExactMatches = true,
+            };
+        }
+
         public static BoolQuery ConstructSearchQuery(
             string searchText,
             IEnumerable<string> searchFields,
@@ -590,6 +604,13 @@ namespace QueryEditor.Services.ElasticSearch
             };
 
             return query;
+        }
+
+        public class NestedQueryParams
+        {
+            public string Path;
+            public List<QueryContainer> Queries;
+            public List<NestedQueryParams> NestedParams;
         }
 
         public static ICollection<QueryContainer> AddFilters(
@@ -623,38 +644,154 @@ namespace QueryEditor.Services.ElasticSearch
 
             queries.AddRange(rootQuery.Queries);
 
+            var parentsAndQueries = new List<NestedQueryParams> { };
+
             foreach (var child in rootQuery.NestedChildren)
             {
-                GetNestedQueries(logicalOperator, queries, child);
+                var queriesPartedByParents = GetQueriesSeparatedByParents(
+                    logicalOperator, queries,
+                    child,
+                    new List<NestedQueryParams> { });
+
+                OrganizeQueries(parentsAndQueries, queriesPartedByParents);
             }
+
+            var nestedQueries = new List<QueryContainer> { };
+
+            foreach (var querySet in parentsAndQueries)
+            {
+                if (querySet.NestedParams.Any())
+                {
+                    var queriesOfCurrentParent = GetQueries(querySet);
+                    queriesOfCurrentParent.AddRange(querySet.Queries);
+                    nestedQueries.Add(
+                            FilterConstructorService.ConstructNestedQuery(querySet.Path, GetBoolQuery(LogicalOperator.AND, queriesOfCurrentParent))
+                        );
+                }
+                else
+                {
+                    nestedQueries.AddRange(GetQueries(querySet));
+                }
+            }
+
+            queries.AddRange(nestedQueries);
 
             return queries;
         }
 
-        public static void GetNestedQueries(
+        private static void OrganizeQueries(List<NestedQueryParams> parentsAndQueries, List<NestedQueryParams> queriesPartedByParents)
+        {
+            queriesPartedByParents.ToList().ForEach((_) =>
+            {
+                var parts = _.Path.Split('.');
+                var currentPath = string.Empty;
+
+                foreach (var part in parts)
+                {
+                    currentPath = string.IsNullOrEmpty(currentPath) ? part : currentPath + $".{part}";
+
+                    var parent = parentsAndQueries.Find(nestedParam => nestedParam.Path == currentPath);
+
+                    if (parent != null)
+                    {
+                        var indexOfParent = parentsAndQueries.IndexOf(parent);
+                        parentsAndQueries[indexOfParent].NestedParams.Add(_);
+                        break;
+                    }
+                    else
+                    {
+                        parentsAndQueries.Add(_);
+                    }
+                }
+            });
+        }
+
+        public static List<QueryContainer> GetQueries(
+            NestedQueryParams nestedParam,
+            List<QueryContainer> queries = null)
+        {
+            if (queries == null || queries.Any() == false)
+            {
+                queries = new List<QueryContainer> { };
+            }
+
+            if (nestedParam.NestedParams.Any() == false)
+            {
+                var boolQuery = GetBoolQuery(LogicalOperator.AND, nestedParam.Queries);
+                queries.Add(FilterConstructorService.ConstructNestedQuery(
+                    nestedParam.Path,
+                    boolQuery));
+            }
+            else
+            {
+                foreach (var child in nestedParam.NestedParams)
+                {
+                    queries.AddRange(GetQueries(child, queries));
+                }
+            }
+            return queries;
+        }
+
+        public static List<NestedQueryParams> GetQueriesSeparatedByParents(
             LogicalOperator logicalOperator,
             List<QueryContainer> queries,
-            NestedItem child)
+            NestedItem child,
+            List<NestedQueryParams> nestedQueryParams)
         {
             var containerForChildren = queries;
+            //var children = new List<NestedItem> { };
 
             if (child.Queries.Any() == true)
             {
-                var boolQuery = FilterConstructorService.ConstructNestedQuery(
-                    child.Path,
-                    GetBoolQuery(logicalOperator, child.Queries));
-
-                queries.Add(boolQuery);
+                //var boolQuery = FilterConstructorService.ConstructNestedQuery(
+                //    child.Path,
+                //    GetBoolQuery(logicalOperator, child.Queries));
+                nestedQueryParams.Add(
+                    new NestedQueryParams
+                    {
+                        Path = child.Path,
+                        Queries = child.Queries.ToList(),
+                        NestedParams = new List<NestedQueryParams> { },
+                    });
+                //queries.Add(boolQuery);
             }
 
             foreach (var grandChild in child.NestedChildren)
             {
-                GetNestedQueries(
+                GetQueriesSeparatedByParents(
                     logicalOperator,
                     containerForChildren,
-                    grandChild);
+                    grandChild,
+                    nestedQueryParams);
             }
+
+            return nestedQueryParams;
         }
+
+        //public static void GetNestedQueries(
+        //    LogicalOperator logicalOperator,
+        //    List<QueryContainer> queries,
+        //    NestedItem child)
+        //{
+        //    var containerForChildren = queries;
+
+        //    if (child.Queries.Any() == true)
+        //    {
+        //        var boolQuery = FilterConstructorService.ConstructNestedQuery(
+        //            child.Path,
+        //            GetBoolQuery(logicalOperator, child.Queries));
+
+        //        queries.Add(boolQuery);
+        //    }
+
+        //    foreach (var grandChild in child.NestedChildren)
+        //    {
+        //        GetNestedQueries(
+        //            logicalOperator,
+        //            containerForChildren,
+        //            grandChild);
+        //    }
+        //}
 
         public static QueryContainer GetQuery(IFilterDefinition filterDefinition)
         {

@@ -23,5 +23,7 @@ namespace ElasticSearchSearchEnhancement.Models.SearchRelatedTemplates
         public LogicalOperator LogicalOperator { get; set; }
 
         public IEnumerable<IFilterDefinition> Filters { get; set; }
+
+        public FilterGroup Child { get; set; }
     }
 }
