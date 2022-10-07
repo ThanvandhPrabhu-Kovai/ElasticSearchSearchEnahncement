@@ -7,6 +7,7 @@ using SearchReq = ElasticSearchSearchEnhancement.Models.SearchRelatedTemplates.S
 using DateRan = ElasticSearchSearchEnhancement.Models.Search.DateRange;
 using System;
 using ElasticSearchSearchEnhancement.Models.SearchRelatedTemplates;
+using System.Linq;
 
 namespace QueryEditor
 {
@@ -63,16 +64,43 @@ namespace QueryEditor
 
                 }
             };
+            searchRequest.FieldsToReturn = new List<string> {
+                "contacts.name",
+                "contacts.campaigns.response.responderSentiment",
+                "contacts.shield",
+                "name"
+            };
 
-            var request = ElasticSearchService.ConstructSearchRequest(elasticClient, searchRequest);
+            var simpleReq = new SearchReq
+            {
+                Filters = new List<IFilterDefinition> {
+                    new FilterDefinition{
+                        Field = "contacts.firstName",
+                            LogicalOperator = LogicalOperator.OR,
+                            FindExactMatches = false,
 
-            var response = await elasticSearch.SearchThroughNestedObjectsAsync(
-                elasticClient,
-                searchRequest,
-                "contacts.campaigns");
+                        Value = "test"
+                    }
+                },
+                FieldsToReturn = new List<string> {
+                    "contacts.firstName",
+                    "name",
+                    "email"
+                }
+            };
 
+            var request = ElasticSearchService.ConstructSearchRequest(elasticClient, simpleReq);
+
+            var response = await elasticSearch.ComplexSearchAsync(
+                elasticClient, 
+                simpleReq);
+
+            var jsonList = new List<string> { };
+
+            response.ToList().ForEach((_) =>
+            {
+                jsonList.Add(_.ToJson());
+            });
         }
-
-
     }
 }

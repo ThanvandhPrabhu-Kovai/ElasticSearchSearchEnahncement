@@ -22,7 +22,7 @@ namespace QueryEditor.Services.ElasticSearch
 
         private const string ElasticSearchClusterUri = "http://localhost:9200";
 
-        private const string IndexNameCustomers = "18455014ef7f413c8be61acca225d24e-customers-test";
+        private const string IndexNameCustomers = "18455014ef7f413c8be61acca225d24e-customers";
 
         private static ConnectionSettings GetElasticSearchConnectionSettings(StaticConnectionPool connectionPool) => new ConnectionSettings(connectionPool)
                                                   .DisableDirectStreaming()
@@ -45,47 +45,112 @@ namespace QueryEditor.Services.ElasticSearch
 
         public virtual async Task<IEnumerable<CustomerSearch>> SearchThroughNestedObjectsAsync(
            ElasticClient elasticClient,
-           SearchReq searchRequest,
-           string nestedPath)
+           SearchReq searchRequest)
         {
-            if (string.IsNullOrEmpty(nestedPath))
-            {
-                throw new ArgumentNullException(nestedPath);
-            }
-
             var request = ConstructSearchRequest(elasticClient, searchRequest);
 
-            var searchResponse = await elasticClient
-                .SearchAsync<CustomerSearch>(request)
-                .ConfigureAwait(false);
+            var response = await elasticClient.SearchAsync<object>(request);
 
-            var searchResultsWithOnlyChildren = new List<object>();
+            var parents = response.Hits.Select(_ => _.Source).ToList();
+            var parentsWithFilteredChildren = new List<CustomerSearch> { };
 
-            var customers = new List<CustomerSearch>();
+            var sourceType = response.Hits.GetType().GetGenericArguments().Single();
 
-            var hits = searchResponse.Hits;
-
-            foreach (var hit in hits)
+            foreach (IHit<object> hit in response.Hits.ToList())
             {
-                var parent = hit.Source;
-                var children = new List<object>();
-
-                // to do check this code
-                foreach (var innerHit in hit.InnerHits)
+                var source = hit.Source as Dictionary<string, object>;
+                var customer = new CustomerSearch();
+                source.Keys.ToList().ForEach((key) =>
                 {
-                    if (innerHit.Key == nestedPath)
-                    {
-                        var matches = innerHit.Value.Hits.Hits.Select(document => document.Source.As<object>());
-                        children.AddRange(matches);
-                    }
-                }
+                    customer.SetProperty(key, source[key]);
+                    customer.ToJson();
+                });
 
-                customers.Add(parent);
-                searchResultsWithOnlyChildren.AddRange(children);
+                var currentInnerHits = hit.InnerHits;
+                string nestedPath = string.Empty;
+
+                do
+                {
+                    IReadOnlyDictionary<string, InnerHitsResult> nestedInnerHits = null;
+
+                    currentInnerHits.ToList().ForEach((innerHit) =>
+                    {
+                        nestedPath = innerHit.Key;
+
+                        var matches = innerHit.Value.Hits.Hits.Select(_ =>
+                        {
+                            nestedInnerHits = _.InnerHits;
+                            return _.Source.As<object>();
+                        }).ToList<object>();
+
+                        customer[nestedPath] = matches;
+                    });
+
+                    currentInnerHits = nestedInnerHits;
+
+                } while (currentInnerHits != null);
+
+                parentsWithFilteredChildren.Add(customer);
             }
 
-            return customers;
+            return parentsWithFilteredChildren;
         }
+
+
+        public virtual async Task<IEnumerable<CustomerSearch>> ComplexSearchAsync(
+           ElasticClient elasticClient,
+           SearchReq searchRequest)
+        {
+            var elasticSearchRequest = ConstructSearchRequest(
+                   elasticClient,
+                   searchRequest);
+
+            var response = await elasticClient
+                .SearchAsync<object>(elasticSearchRequest)
+                .ConfigureAwait(false);
+
+            var parentsWithFilteredChildren = new List<CustomerSearch> { };
+
+            if (response.Hits.Any())
+            {
+                foreach (IHit<object> hit in response.Hits.ToList())
+                {
+                    var source = hit.Source as Dictionary<string, object>;
+                    var dynamicSearchResponse = new CustomerSearch();
+
+                    source.Keys.ToList().ForEach((key) =>
+                    {
+                        dynamicSearchResponse.SetProperty(key, source[key]);
+                    });
+
+                    var currentInnerHits = hit.InnerHits;
+
+                    do
+                    {
+                        IReadOnlyDictionary<string, InnerHitsResult> nestedInnerHits = null;
+
+                        currentInnerHits.ToList().ForEach((innerHit) =>
+                        {
+                            var innerHitsValues = innerHit.Value.Hits.Hits.Select(_ =>
+                            {
+                                nestedInnerHits = _.InnerHits;
+                                return _.Source.As<object>();
+                            }).ToList<object>();
+
+                            dynamicSearchResponse[innerHit.Key] = innerHitsValues;
+                        });
+
+                        currentInnerHits = nestedInnerHits;
+                    }
+                    while (currentInnerHits != null);
+
+                    parentsWithFilteredChildren.Add(dynamicSearchResponse);
+                }
+            }
+
+            return parentsWithFilteredChildren;
+        }
+
 
         public static SearchRequest<CustomerSearch> ConstructSearchRequest(
             ElasticClient elasticClient,
@@ -296,21 +361,6 @@ namespace QueryEditor.Services.ElasticSearch
             return queries;
         }
 
-        public class NestedItem
-        {
-            public NestedItem()
-            {
-                this.NestedChildren = new List<NestedItem>();
-                this.Queries = new List<QueryContainer>();
-            }
-
-            public string Path { get; set; }
-
-            public ICollection<NestedItem> NestedChildren { get; set; }
-
-            public ICollection<QueryContainer> Queries { get; set; }
-        }
-
         public static IProperties GetMapping(ElasticClient elastic)
         {
             if (elastic == null)
@@ -324,13 +374,28 @@ namespace QueryEditor.Services.ElasticSearch
                 return null;
             }
 
-            var mapping = mappings.Indices["18455014ef7f413c8be61acca225d24e-customers-test"].Mappings;
+            var mapping = mappings.Indices["18455014ef7f413c8be61acca225d24e-customers"].Mappings;
             if (mapping == null)
             {
                 return null;
             }
 
             return mapping.Properties;
+        }
+
+        public class NestedItem
+        {
+            public NestedItem()
+            {
+                this.NestedChildren = new List<NestedItem>();
+                this.Queries = new List<QueryContainer>();
+            }
+
+            public string Path { get; set; }
+
+            public ICollection<NestedItem> NestedChildren { get; set; }
+
+            public ICollection<QueryContainer> Queries { get; set; }
         }
 
         private static NestedItem GetParent(
@@ -497,6 +562,7 @@ namespace QueryEditor.Services.ElasticSearch
                 source.Keys.ToList().ForEach((key) =>
                 {
                     customer.SetProperty(key, source[key]);
+                    customer.ToJson();
                 });
 
                 var currentInnerHits = hit.InnerHits;
@@ -606,11 +672,30 @@ namespace QueryEditor.Services.ElasticSearch
             return query;
         }
 
-        public class NestedQueryParams
+        public class NestedQueryMetadata
         {
             public string Path;
             public List<QueryContainer> Queries;
-            public List<NestedQueryParams> NestedParams;
+            public List<NestedQueryMetadata> ChildrenMetadata;
+
+            public NestedQueryMetadata() { }
+
+            public NestedQueryMetadata(
+                string path,
+                List<QueryContainer> queries) {
+                this.Path = path;
+                this.Queries = queries;
+                this.ChildrenMetadata = new List<NestedQueryMetadata> { };
+            }
+            
+            public NestedQueryMetadata(
+                string path,
+                List<QueryContainer> queries,
+                List<NestedQueryMetadata> childrenMetadata) {
+                this.Path = path;
+                this.Queries = queries;
+                this.ChildrenMetadata = childrenMetadata;
+            }
         }
 
         public static ICollection<QueryContainer> AddFilters(
@@ -619,7 +704,7 @@ namespace QueryEditor.Services.ElasticSearch
         {
             var queries = new List<QueryContainer>();
 
-            if (filterDefinitions == null || !filterDefinitions.Any())
+            if (filterDefinitions == null || filterDefinitions.Any() == false)
             {
                 return queries;
             }
@@ -632,56 +717,80 @@ namespace QueryEditor.Services.ElasticSearch
 
                 if (filterDefinition is FilterDefinition)
                 {
-                    parent = GetParent(rootQuery, filterDefinition as FilterDefinition);
+                    parent = GetParent(
+                        rootQuery,
+                        filterDefinition as FilterDefinition);
                 }
                 else
                 {
                     parent = rootQuery;
                 }
 
-                parent.Queries.Add(GetQuery(filterDefinition));
+                parent.Queries.Add(
+                    GetQuery(filterDefinition));
             }
 
-            queries.AddRange(rootQuery.Queries);
+            queries.AddRange(
+                rootQuery.Queries);
 
-            var parentsAndQueries = new List<NestedQueryParams> { };
-
-            foreach (var child in rootQuery.NestedChildren)
-            {
-                var queriesPartedByParents = GetQueriesSeparatedByParents(
-                    logicalOperator, queries,
-                    child,
-                    new List<NestedQueryParams> { });
-
-                OrganizeQueries(parentsAndQueries, queriesPartedByParents);
-            }
-
-            var nestedQueries = new List<QueryContainer> { };
-
-            foreach (var querySet in parentsAndQueries)
-            {
-                if (querySet.NestedParams.Any())
-                {
-                    var queriesOfCurrentParent = GetQueries(querySet);
-                    queriesOfCurrentParent.AddRange(querySet.Queries);
-                    nestedQueries.Add(
-                            FilterConstructorService.ConstructNestedQuery(querySet.Path, GetBoolQuery(LogicalOperator.AND, queriesOfCurrentParent))
-                        );
-                }
-                else
-                {
-                    nestedQueries.AddRange(GetQueries(querySet));
-                }
-            }
-
-            queries.AddRange(nestedQueries);
+            queries.AddRange(
+                GetNestedQueries(
+                    logicalOperator,
+                    queries, 
+                    rootQuery));
 
             return queries;
         }
 
-        private static void OrganizeQueries(List<NestedQueryParams> parentsAndQueries, List<NestedQueryParams> queriesPartedByParents)
+        private static List<QueryContainer> GetNestedQueries(
+            LogicalOperator logicalOperator, 
+            List<QueryContainer> queries,
+            NestedItem rootQuery)
         {
-            queriesPartedByParents.ToList().ForEach((_) =>
+            var nestedQueryMetadata = new List<NestedQueryMetadata> { };
+
+            foreach (var child in rootQuery.NestedChildren)
+            {
+                var nestedQueryMetadataSeparatedByParents = GetNestedQueriesSeparatedByParents(
+                        logicalOperator,
+                        child,
+                        new List<NestedQueryMetadata> { });
+
+                OrganizeQueries(
+                    nestedQueryMetadata,
+                    nestedQueryMetadataSeparatedByParents);
+            }
+
+            var nestedRootQueries = new List<QueryContainer> { };
+
+            foreach (var nestedQuery in nestedQueryMetadata)
+            {
+                if (nestedQuery.ChildrenMetadata.Any() == true)
+                {
+                    var queriesOfCurrentParent = GetQueries(nestedQuery);
+                    queriesOfCurrentParent.AddRange(nestedQuery.Queries);
+
+                    nestedRootQueries.Add(
+                            FilterConstructorService.ConstructNestedQuery(
+                                nestedQuery.Path, 
+                                GetBoolQuery(
+                                    LogicalOperator.AND,
+                                    queriesOfCurrentParent)));
+                }
+                else
+                {
+                    nestedRootQueries.AddRange(GetQueries(nestedQuery));
+                }
+            }
+
+            return nestedRootQueries;
+        }
+
+        private static void OrganizeQueries(
+            List<NestedQueryMetadata> nestedQueryMetadata, 
+            List<NestedQueryMetadata> nestedQueryMetadataPartedByParents)
+        {
+            nestedQueryMetadataPartedByParents.ToList().ForEach((_) =>
             {
                 var parts = _.Path.Split('.');
                 var currentPath = string.Empty;
@@ -690,41 +799,41 @@ namespace QueryEditor.Services.ElasticSearch
                 {
                     currentPath = string.IsNullOrEmpty(currentPath) ? part : currentPath + $".{part}";
 
-                    var parent = parentsAndQueries.Find(nestedParam => nestedParam.Path == currentPath);
+                    var parent = nestedQueryMetadata.Find(nestedParam => nestedParam.Path == currentPath);
 
                     if (parent != null)
                     {
-                        var indexOfParent = parentsAndQueries.IndexOf(parent);
-                        parentsAndQueries[indexOfParent].NestedParams.Add(_);
+                        var indexOfParent = nestedQueryMetadata.IndexOf(parent);
+                        nestedQueryMetadata[indexOfParent].ChildrenMetadata.Add(_);
                         break;
                     }
                     else
                     {
-                        parentsAndQueries.Add(_);
+                        nestedQueryMetadata.Add(_);
                     }
                 }
             });
         }
 
         public static List<QueryContainer> GetQueries(
-            NestedQueryParams nestedParam,
+            NestedQueryMetadata nestedQueryMetadata,
             List<QueryContainer> queries = null)
         {
-            if (queries == null || queries.Any() == false)
+            if (queries == null)
             {
                 queries = new List<QueryContainer> { };
             }
 
-            if (nestedParam.NestedParams.Any() == false)
+            if (nestedQueryMetadata.ChildrenMetadata.Any() == false)
             {
-                var boolQuery = GetBoolQuery(LogicalOperator.AND, nestedParam.Queries);
+                var boolQuery = GetBoolQuery(LogicalOperator.AND, nestedQueryMetadata.Queries);
                 queries.Add(FilterConstructorService.ConstructNestedQuery(
-                    nestedParam.Path,
+                    nestedQueryMetadata.Path,
                     boolQuery));
             }
             else
             {
-                foreach (var child in nestedParam.NestedParams)
+                foreach (var child in nestedQueryMetadata.ChildrenMetadata)
                 {
                     queries.AddRange(GetQueries(child, queries));
                 }
@@ -732,66 +841,32 @@ namespace QueryEditor.Services.ElasticSearch
             return queries;
         }
 
-        public static List<NestedQueryParams> GetQueriesSeparatedByParents(
+        public static List<NestedQueryMetadata> GetNestedQueriesSeparatedByParents(
             LogicalOperator logicalOperator,
-            List<QueryContainer> queries,
             NestedItem child,
-            List<NestedQueryParams> nestedQueryParams)
+            List<NestedQueryMetadata> nestedQueryMetadata)
         {
-            var containerForChildren = queries;
-            //var children = new List<NestedItem> { };
-
             if (child.Queries.Any() == true)
             {
-                //var boolQuery = FilterConstructorService.ConstructNestedQuery(
-                //    child.Path,
-                //    GetBoolQuery(logicalOperator, child.Queries));
-                nestedQueryParams.Add(
-                    new NestedQueryParams
+                nestedQueryMetadata.Add(
+                    new NestedQueryMetadata
                     {
                         Path = child.Path,
                         Queries = child.Queries.ToList(),
-                        NestedParams = new List<NestedQueryParams> { },
+                        ChildrenMetadata = new List<NestedQueryMetadata> { },
                     });
-                //queries.Add(boolQuery);
             }
 
             foreach (var grandChild in child.NestedChildren)
             {
-                GetQueriesSeparatedByParents(
+                GetNestedQueriesSeparatedByParents(
                     logicalOperator,
-                    containerForChildren,
                     grandChild,
-                    nestedQueryParams);
+                    nestedQueryMetadata);
             }
 
-            return nestedQueryParams;
+            return nestedQueryMetadata;
         }
-
-        //public static void GetNestedQueries(
-        //    LogicalOperator logicalOperator,
-        //    List<QueryContainer> queries,
-        //    NestedItem child)
-        //{
-        //    var containerForChildren = queries;
-
-        //    if (child.Queries.Any() == true)
-        //    {
-        //        var boolQuery = FilterConstructorService.ConstructNestedQuery(
-        //            child.Path,
-        //            GetBoolQuery(logicalOperator, child.Queries));
-
-        //        queries.Add(boolQuery);
-        //    }
-
-        //    foreach (var grandChild in child.NestedChildren)
-        //    {
-        //        GetNestedQueries(
-        //            logicalOperator,
-        //            containerForChildren,
-        //            grandChild);
-        //    }
-        //}
 
         public static QueryContainer GetQuery(IFilterDefinition filterDefinition)
         {

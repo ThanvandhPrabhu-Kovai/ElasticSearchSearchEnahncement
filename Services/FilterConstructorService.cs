@@ -66,20 +66,34 @@ namespace QueryEditor.Services.ElasticSearch
                         }
                         else
                         {
-                            var queries = new List<QueryContainer>();
+                            if (filter.Values.Any()) {
+                                var queries = new List<QueryContainer>();
 
-                            foreach (var filterValue in filter.Values)
-                            {
-                                queries.Add(
-                                    ConstructQueryStringFilter(
-                                        filter.Fields.Any() ? filter.Fields.ToList() : new List<string> { filter.Field },
-                                        filterValue));
+                                foreach (var filterValue in filter.Values)
+                                {
+                                    queries.Add(
+                                        ConstructQueryStringFilter(
+                                            filter.Fields.Any() ? filter.Fields.ToList() : new List<string> { filter.Field },
+                                            filterValue));
+                                }
+
+                                return new BoolQuery
+                                {
+                                    Should = queries,
+                                };
                             }
+                            else {
+                                var queries = new List<QueryContainer> {
+                                    ConstructQueryStringFilter(
+                                            filter.Fields.Any() ? filter.Fields.ToList() : new List<string> { filter.Field },
+                                            filter.Value.ToString())
+                                };
 
-                            return new BoolQuery
-                            {
-                                Should = queries,
-                            };
+                                return new BoolQuery
+                                {
+                                    Should = queries,
+                                };
+                            }
                         }
                     }
             }
@@ -175,7 +189,7 @@ namespace QueryEditor.Services.ElasticSearch
             return queryStringQuery;
         }
 
-        internal static QueryContainer ConstructNestedQuery(string path, QueryContainer query, int from = 0, int pageSize = 0)
+        internal static QueryContainer ConstructNestedQuery(string path, QueryContainer query, int from = 0, int pageSize = 10)
         {
             return new NestedQuery
             {
@@ -185,6 +199,9 @@ namespace QueryEditor.Services.ElasticSearch
                 {
                     From = from,
                     Size = pageSize,
+                    Source = new SourceFilter { 
+                        Includes = new Field("contacts.firstName")
+                    }
                 },
             };
         }
