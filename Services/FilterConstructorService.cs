@@ -1,12 +1,13 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 using ElasticSearchSearchEnhancement.Models;
 using ElasticSearchSearchEnhancement.Models.SearchRelatedTemplates;
 using Nest;
 
-namespace QueryEditor.Services.ElasticSearch 
-{ 
+namespace QueryEditor.Services.ElasticSearch
+{
     internal static class FilterConstructorService
     {
         public static QueryContainer ConstructFilterDefinitionFilter(FilterDefinition filter)
@@ -56,17 +57,27 @@ namespace QueryEditor.Services.ElasticSearch
                                 };
                             }
 
-                            return filter.Values.Any() ?
-                                    ConstructTermsFilter(
-                                        filter.Field,
-                                        filter.Values.ToList())
-                                        : ConstructSimpleQueryStringFilter(
+                            if (filter.Values.Any())
+                            {
+                                return filter.Values.Count > 1 ?
+                                        ConstructTermsFilter(
                                             filter.Field,
-                                            filter.Value.ToString());
+                                            filter.Values.ToList())
+                                            : ConstructSimpleQueryStringFilter(
+                                                filter.Field,
+                                                filter.Values.ToList()[0].ToString());
+                            }
+                            else
+                            {
+                                return ConstructSimpleQueryStringFilter(
+                                                filter.Field,
+                                                filter.Value.ToString());
+                            }
                         }
                         else
                         {
-                            if (filter.Values.Any()) {
+                            if (filter.Values.Any())
+                            {
                                 var queries = new List<QueryContainer>();
 
                                 foreach (var filterValue in filter.Values)
@@ -82,7 +93,8 @@ namespace QueryEditor.Services.ElasticSearch
                                     Should = queries,
                                 };
                             }
-                            else {
+                            else
+                            {
                                 var queries = new List<QueryContainer> {
                                     ConstructQueryStringFilter(
                                             filter.Fields.Any() ? filter.Fields.ToList() : new List<string> { filter.Field },
@@ -140,12 +152,16 @@ namespace QueryEditor.Services.ElasticSearch
 
         internal static QueryContainer ConstructDateRangeFilter(FilterDefinition filter)
         {
+            CultureInfo culture = new CultureInfo("pt-BR");
+            var greaterThanOrEqualToDate = DateTime.Parse(filter.Values.ElementAt(0)).ToString("d", culture);
+            var lessThanOrEqualToDate = DateTime.Parse(filter.Values.ElementAt(1)).ToString("d", culture);
+
             return new DateRangeQuery
             {
                 Field = new Field(filter.Field),
                 Format = "MM/dd/yyyy",
-                GreaterThanOrEqualTo = filter.Values.ElementAt(0),
-                LessThanOrEqualTo = filter.Values.ElementAt(1),
+                GreaterThanOrEqualTo = greaterThanOrEqualToDate,
+                LessThanOrEqualTo = lessThanOrEqualToDate,
             };
         }
 
@@ -189,7 +205,8 @@ namespace QueryEditor.Services.ElasticSearch
             return queryStringQuery;
         }
 
-        internal static QueryContainer ConstructNestedQuery(string path, QueryContainer query, int from = 0, int pageSize = 10)
+        internal static QueryContainer ConstructNestedQuery(
+            string path, QueryContainer query, Fields fields, int from = 0, int pageSize = 100)
         {
             return new NestedQuery
             {
@@ -199,8 +216,9 @@ namespace QueryEditor.Services.ElasticSearch
                 {
                     From = from,
                     Size = pageSize,
-                    Source = new SourceFilter { 
-                        Includes = new Field("contacts.firstName")
+                    Source = new SourceFilter
+                    {
+                        Includes = fields
                     }
                 },
             };

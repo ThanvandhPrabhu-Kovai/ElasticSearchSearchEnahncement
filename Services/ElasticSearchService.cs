@@ -164,12 +164,13 @@ namespace QueryEditor.Services.ElasticSearch
                 Size = searchRequest.PageSize == 0 ? null : (int?)searchRequest.PageSize,
             };
 
-            AddFieldsToInclude(searchRequest, elasticSearchRequest);
+            var fields = AddFieldsToInclude(searchRequest, elasticSearchRequest);
 
             elasticSearchRequest.Query = ConstructSearchQuery(
                 searchRequest.Query,
                 searchRequest.Fields,
-                searchRequest.Filters);
+                searchRequest.Filters,
+                fields);
 
             AddSorting(searchRequest, elasticSearchRequest);
 
@@ -240,15 +241,14 @@ namespace QueryEditor.Services.ElasticSearch
             });
         }
 
-        private static void AddFieldsToInclude(SearchReq searchRequest, Nest.SearchRequest elasticSearchRequest)
+        private static Fields AddFieldsToInclude(SearchReq searchRequest, Nest.SearchRequest elasticSearchRequest)
         {
+            Fields fields = null;
             if (searchRequest.FieldsToReturn == null
                 || searchRequest.FieldsToReturn.Any() == false)
             {
-                return;
+                return fields;
             }
-
-            Fields fields = null;
 
             foreach (var field in searchRequest.FieldsToReturn)
             {
@@ -265,12 +265,14 @@ namespace QueryEditor.Services.ElasticSearch
             {
                 Includes = fields,
             };
+
+            return fields;
         }
 
         private BoolQuery ConstructSearchQueryForFilterGroups(
           string searchText,
           IEnumerable<string> searchFields,
-          IEnumerable<FilterGroup> filterGroups)
+          IEnumerable<FilterGroup> filterGroups, Fields fields)
         {
             var filtersWithMustCondition = new List<QueryContainer>();
             var filtersWithShouldCondition = new List<QueryContainer>();
@@ -279,9 +281,9 @@ namespace QueryEditor.Services.ElasticSearch
             if (searchFields != null && searchFields.Any())
             {
                 filtersWithMustCondition.AddRange(
-                    ConstructSearchFieldsFilter(
+                    AddFilters(
                         searchText,
-                        searchFields));
+                        searchFields,fields));
             }
 
             foreach (var filterGroup in filterGroups)
@@ -319,46 +321,6 @@ namespace QueryEditor.Services.ElasticSearch
                 Should = filtersWithShouldCondition,
                 Must = filtersWithMustCondition,
             };
-        }
-
-        private static List<QueryContainer> ConstructSearchFieldsFilter(string searchText, IEnumerable<string> searchFields)
-        {
-            var queries = new List<QueryContainer>();
-            ////var nestedFields = new Dictionary<string, List<string>>();
-            ////var directFields = new List<string>();
-
-            ////if (searchFields != null && searchFields.Any())
-            ////{
-            ////    var seperatedFields = SeperateSearchFieldsAsNestedOrDirect(searchFields);
-            ////    nestedFields = seperatedFields.nestedFields;
-            ////    directFields = seperatedFields.directFields;
-            ////}
-
-            ////if (!string.IsNullOrWhiteSpace(searchText)
-            ////         && directFields != null
-            ////         && directFields.Any())
-            ////{
-            ////    queries.Add(
-            ////        FilterConstructorService.ConstructQueryStringFilter(
-            ////            directFields,
-            ////            searchText));
-            ////}
-
-            ////if (!string.IsNullOrWhiteSpace(searchText)
-            ////         && nestedFields != null
-            ////         && nestedFields.Any())
-            ////{
-            ////    nestedFields.Keys.ToList().ForEach((nestedPath) =>
-            ////    {
-            ////        List<string> searchFields = nestedFields[nestedPath];
-            ////        queries.Add(
-            ////            FilterConstructorService.ConstructNestedQuery(
-            ////                nestedPath,
-            ////                FilterConstructorService.ConstructQueryStringFilter(searchFields, searchText)));
-            ////    });
-            ////}
-
-            return queries;
         }
 
         public static IProperties GetMapping(ElasticClient elastic)
@@ -402,7 +364,23 @@ namespace QueryEditor.Services.ElasticSearch
             NestedItem nestedItem,
             FilterDefinition filterDefinition)
         {
-            var path = filterDefinition.Field;
+            if (filterDefinition.Fields != null && filterDefinition.Fields.Any())
+            {
+                var parents = new List<NestedItem> { };
+                filterDefinition.Fields.ToList().ForEach((field) =>
+                {
+                    parents.Add(GetParent(nestedItem, field));
+                });
+                return new NestedItem();
+            }
+            else
+            {
+                return GetParent(nestedItem, filterDefinition.Field);
+            }
+        }
+
+        private static NestedItem GetParent(NestedItem nestedItem, string path)
+        {
             var parts = path.Split('.').ToList();
             string previousParentPath = null;
             string currentPath = null;
@@ -611,6 +589,8 @@ namespace QueryEditor.Services.ElasticSearch
         public static FilterDefinition ConstructFilterDefinitionForDateRange(DateRan dateRange)
         {
             CultureInfo culture = new CultureInfo("pt-BR");
+            var strt = dateRange.StartDate.ToString("d", culture);
+            var end = dateRange.EndDate.ToString("d", culture);
             return new FilterDefinition
             {
                 Field = "contacts.campaigns.respondedOn",
@@ -618,8 +598,8 @@ namespace QueryEditor.Services.ElasticSearch
                 FilterType = FilterTypes.DateRange,
                 Values = new List<string>
                 {
-                    dateRange.StartDate.ToString("d", culture),
-                    dateRange.EndDate.ToString("d", culture),
+                    strt,
+                    end,
                 },
                 FindExactMatches = true,
             };
@@ -650,26 +630,23 @@ namespace QueryEditor.Services.ElasticSearch
         public static BoolQuery ConstructSearchQuery(
             string searchText,
             IEnumerable<string> searchFields,
-            IEnumerable<IFilterDefinition> filterDefinitions)
+            IEnumerable<IFilterDefinition> filterDefinitions,
+            Fields fields)
         {
-            var filters = new List<QueryContainer>();
-
             if (searchFields != null && searchFields.Any())
             {
-                filters.AddRange(
-                    ConstructSearchFieldsFilter(
+                return new BoolQuery {
+                    Must = AddFilters(filterDefinitions, LogicalOperator.AND, fields),
+                    Should = AddFilters(
                         searchText,
-                        searchFields));
+                        searchFields,
+                        fields),
+                };
             }
 
-            filters.AddRange(AddFilters(filterDefinitions, LogicalOperator.AND));
-
-            var query = new BoolQuery
-            {
-                Must = filters,
+            return new BoolQuery { 
+                Must = AddFilters(filterDefinitions, LogicalOperator.AND, fields)
             };
-
-            return query;
         }
 
         public class NestedQueryMetadata
@@ -682,16 +659,18 @@ namespace QueryEditor.Services.ElasticSearch
 
             public NestedQueryMetadata(
                 string path,
-                List<QueryContainer> queries) {
+                List<QueryContainer> queries)
+            {
                 this.Path = path;
                 this.Queries = queries;
                 this.ChildrenMetadata = new List<NestedQueryMetadata> { };
             }
-            
+
             public NestedQueryMetadata(
                 string path,
                 List<QueryContainer> queries,
-                List<NestedQueryMetadata> childrenMetadata) {
+                List<NestedQueryMetadata> childrenMetadata)
+            {
                 this.Path = path;
                 this.Queries = queries;
                 this.ChildrenMetadata = childrenMetadata;
@@ -700,7 +679,8 @@ namespace QueryEditor.Services.ElasticSearch
 
         public static ICollection<QueryContainer> AddFilters(
             IEnumerable<IFilterDefinition> filterDefinitions,
-            LogicalOperator logicalOperator)
+            LogicalOperator logicalOperator,
+            Fields fields)
         {
             var queries = new List<QueryContainer>();
 
@@ -727,7 +707,7 @@ namespace QueryEditor.Services.ElasticSearch
                 }
 
                 parent.Queries.Add(
-                    GetQuery(filterDefinition));
+                    GetQuery(filterDefinition, fields));
             }
 
             queries.AddRange(
@@ -736,16 +716,72 @@ namespace QueryEditor.Services.ElasticSearch
             queries.AddRange(
                 GetNestedQueries(
                     logicalOperator,
-                    queries, 
-                    rootQuery));
+                    queries,
+                    rootQuery,
+                    fields));
+
+            return queries;
+        }
+
+        private static List<QueryContainer> AddFilters(
+            string searchText,
+            IEnumerable<string> searchFields,
+            Fields fields)
+        {
+            const string root = "root";
+            var queries = new List<QueryContainer> { };
+
+            if (searchFields == null || searchFields.Any() == false)
+            {
+                return queries;
+            }
+
+            Dictionary<string, List<string>> parents = new Dictionary<string, List<string>> { };
+
+            searchFields.ToList().ForEach((field) =>
+            {
+                var parent = GetParent(new NestedItem(), field);
+
+                if (parent.Path == null)
+                {
+                    parent.Path = "root";
+                }
+
+                if (parents.ContainsKey(parent.Path))
+                {
+                    parents[parent.Path].Add(field);
+                }
+                else
+                {
+                    parents.Add(parent.Path, new List<string> { field });
+                }
+            });
+
+            if (parents.Keys.Any())
+            {
+                parents.Keys.ToList().ForEach((path) =>
+                {
+                    if (path == root)
+                    {
+                        queries.Add(
+                            FilterConstructorService.ConstructQueryStringFilter(parents[path], searchText));
+                    }
+                    else
+                    {
+                        queries.Add(
+                            FilterConstructorService.ConstructNestedQuery(path, FilterConstructorService.ConstructQueryStringFilter(parents[path], searchText), fields));
+                    }
+                });
+            }
 
             return queries;
         }
 
         private static List<QueryContainer> GetNestedQueries(
-            LogicalOperator logicalOperator, 
+            LogicalOperator logicalOperator,
             List<QueryContainer> queries,
-            NestedItem rootQuery)
+            NestedItem rootQuery,
+            Fields fields)
         {
             var nestedQueryMetadata = new List<NestedQueryMetadata> { };
 
@@ -767,19 +803,20 @@ namespace QueryEditor.Services.ElasticSearch
             {
                 if (nestedQuery.ChildrenMetadata.Any() == true)
                 {
-                    var queriesOfCurrentParent = GetQueries(nestedQuery);
+                    var queriesOfCurrentParent = GetQueries(nestedQuery, fields);
                     queriesOfCurrentParent.AddRange(nestedQuery.Queries);
 
                     nestedRootQueries.Add(
                             FilterConstructorService.ConstructNestedQuery(
-                                nestedQuery.Path, 
+                                nestedQuery.Path,
                                 GetBoolQuery(
                                     LogicalOperator.AND,
-                                    queriesOfCurrentParent)));
+                                    queriesOfCurrentParent),
+                                fields));
                 }
                 else
                 {
-                    nestedRootQueries.AddRange(GetQueries(nestedQuery));
+                    nestedRootQueries.AddRange(GetQueries(nestedQuery, fields));
                 }
             }
 
@@ -787,7 +824,7 @@ namespace QueryEditor.Services.ElasticSearch
         }
 
         private static void OrganizeQueries(
-            List<NestedQueryMetadata> nestedQueryMetadata, 
+            List<NestedQueryMetadata> nestedQueryMetadata,
             List<NestedQueryMetadata> nestedQueryMetadataPartedByParents)
         {
             nestedQueryMetadataPartedByParents.ToList().ForEach((_) =>
@@ -817,6 +854,7 @@ namespace QueryEditor.Services.ElasticSearch
 
         public static List<QueryContainer> GetQueries(
             NestedQueryMetadata nestedQueryMetadata,
+            Fields fields,
             List<QueryContainer> queries = null)
         {
             if (queries == null)
@@ -829,13 +867,14 @@ namespace QueryEditor.Services.ElasticSearch
                 var boolQuery = GetBoolQuery(LogicalOperator.AND, nestedQueryMetadata.Queries);
                 queries.Add(FilterConstructorService.ConstructNestedQuery(
                     nestedQueryMetadata.Path,
-                    boolQuery));
+                    boolQuery,
+                    fields));
             }
             else
             {
                 foreach (var child in nestedQueryMetadata.ChildrenMetadata)
                 {
-                    queries.AddRange(GetQueries(child, queries));
+                    GetQueries(child, fields, queries);
                 }
             }
             return queries;
@@ -868,7 +907,7 @@ namespace QueryEditor.Services.ElasticSearch
             return nestedQueryMetadata;
         }
 
-        public static QueryContainer GetQuery(IFilterDefinition filterDefinition)
+        public static QueryContainer GetQuery(IFilterDefinition filterDefinition, Fields fields)
         {
             switch (filterDefinition)
             {
@@ -876,7 +915,8 @@ namespace QueryEditor.Services.ElasticSearch
                     {
                         var filters = AddFilters(
                             filterGroup.Filters,
-                            filterGroup.LogicalOperator);
+                            filterGroup.LogicalOperator,
+                            fields);
 
                         return GetBoolQuery(filterGroup.LogicalOperator, filters);
                     }
