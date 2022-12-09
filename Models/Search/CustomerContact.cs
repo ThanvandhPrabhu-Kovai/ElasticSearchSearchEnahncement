@@ -13,7 +13,7 @@ namespace Kovai.Churn360.Customers.Core.Models
             this.MapContact(contact);
         }
 
-        public CustomerContact(CustomerContact contact, CustomerSearch customerSearch)
+        public CustomerContact(CustomerContact contact, DynamicResponse customerSearch)
         {
             this.MapContact(contact);
             this.Customer = customerSearch;
@@ -50,7 +50,7 @@ namespace Kovai.Churn360.Customers.Core.Models
         public string Shield { get; set; }
 
 #nullable enable
-        public CustomerSearch? Customer { get; set; }
+        public DynamicResponse? Customer { get; set; }
 
         public IEnumerable<CustomerContactCampaign> Campaigns { get; set; }
     }

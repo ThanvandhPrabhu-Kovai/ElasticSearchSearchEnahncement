@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Linq;
 using ElasticSearchSearchEnhancement.Models;
 using ElasticSearchSearchEnhancement.Models.SearchRelatedTemplates;
+using Kovai.Churn360.Customers.Core.Models;
 using Nest;
 
 namespace QueryEditor.Services.ElasticSearch
@@ -14,6 +15,11 @@ namespace QueryEditor.Services.ElasticSearch
         {
             switch (filter.FilterType)
             {
+                case FilterTypes.Range:
+                    {
+                        return ConstructRangeFilter(filter);
+                    }
+
                 case FilterTypes.DateRange:
                     {
                         return ConstructDateRangeFilter(filter);
@@ -109,6 +115,19 @@ namespace QueryEditor.Services.ElasticSearch
                         }
                     }
             }
+        }
+
+        internal static QueryContainer ConstructRangeFilter(FilterDefinition filter)
+        {
+            var greaterThan = double.Parse(filter.Values.ElementAt(0));
+            var lessThan = double.Parse(filter.Values.ElementAt(1));
+
+            return new NumericRangeQuery
+            {
+                Field = new Field(filter.Field),
+                GreaterThan = greaterThan,
+                LessThan = lessThan,
+            };
         }
 
         internal static QueryContainer ConstructNotEqualToFilter(FilterDefinition filter)

@@ -31,6 +31,6 @@ namespace Kovai.Churn360.Customers.Core.Models
         public IEnumerable<string> CustomTags { get; set; }
 
 #nullable enable
-        public CustomerSearch? Customer { get; set; }
+        public DynamicResponse? Customer { get; set; }
     }
 }

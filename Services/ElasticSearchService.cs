@@ -3,7 +3,6 @@ using System.Linq;
 using System.Threading.Tasks;
 using System.Collections.Generic;
 using Nest;
-using Elasticsearch.Net;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.IO;
@@ -13,6 +12,10 @@ using DateRan = ElasticSearchSearchEnhancement.Models.Search.DateRange;
 using ElasticSearchSearchEnhancement.Models.SearchRelatedTemplates;
 using Kovai.Churn360.Customers.Core.Models;
 using System.Globalization;
+using System.Collections;
+using ElasticNet = Elasticsearch.Net;
+using System.Text.Json;
+using ElasticSearchSearchEnhancement.Models.Search;
 
 namespace QueryEditor.Services.ElasticSearch
 {
@@ -22,28 +25,28 @@ namespace QueryEditor.Services.ElasticSearch
 
         private const string ElasticSearchClusterUri = "http://localhost:9200";
 
-        private const string IndexNameCustomers = "18455014ef7f413c8be61acca225d24e-customers";
+        private const string IndexName = "18455014ef7f413c8be61acca225d24e-customers";
 
-        private static ConnectionSettings GetElasticSearchConnectionSettings(StaticConnectionPool connectionPool) => new ConnectionSettings(connectionPool)
+        private static ConnectionSettings GetElasticSearchConnectionSettings(ElasticNet.StaticConnectionPool connectionPool) => new ConnectionSettings(connectionPool)
                                                   .DisableDirectStreaming()
                                                   .BasicAuthentication(username: "elastic", password: "pass@123")
-                                                  .DefaultIndex(IndexNameCustomers)
+                                                  .DefaultIndex(IndexName)
                                                   .DisablePing();
 
         public static ElasticClient GetElasticClient()
         {
             ElasticClient elasticClient;
-            StaticConnectionPool connectionPool;
+            ElasticNet.StaticConnectionPool connectionPool;
 
             var nodes = new Uri[] { new Uri(ElasticSearchClusterUri) };
 
-            connectionPool = new StaticConnectionPool(nodes);
+            connectionPool = new ElasticNet.StaticConnectionPool(nodes);
             elasticClient = new ElasticClient(GetElasticSearchConnectionSettings(connectionPool));
 
             return elasticClient;
         }
 
-        public virtual async Task<IEnumerable<CustomerSearch>> SearchThroughNestedObjectsAsync(
+        public virtual async Task<IEnumerable<DynamicResponse>> SearchThroughNestedObjectsAsync(
            ElasticClient elasticClient,
            SearchReq searchRequest)
         {
@@ -52,14 +55,14 @@ namespace QueryEditor.Services.ElasticSearch
             var response = await elasticClient.SearchAsync<object>(request);
 
             var parents = response.Hits.Select(_ => _.Source).ToList();
-            var parentsWithFilteredChildren = new List<CustomerSearch> { };
+            var parentsWithFilteredChildren = new List<DynamicResponse> { };
 
             var sourceType = response.Hits.GetType().GetGenericArguments().Single();
 
             foreach (IHit<object> hit in response.Hits.ToList())
             {
                 var source = hit.Source as Dictionary<string, object>;
-                var customer = new CustomerSearch();
+                var customer = new DynamicResponse();
                 source.Keys.ToList().ForEach((key) =>
                 {
                     customer.SetProperty(key, source[key]);
@@ -96,8 +99,7 @@ namespace QueryEditor.Services.ElasticSearch
             return parentsWithFilteredChildren;
         }
 
-
-        public virtual async Task<IEnumerable<CustomerSearch>> ComplexSearchAsync(
+        public virtual async Task<IEnumerable<DynamicResponse>> ComplexSearchAsync(
            ElasticClient elasticClient,
            SearchReq searchRequest)
         {
@@ -109,14 +111,13 @@ namespace QueryEditor.Services.ElasticSearch
                 .SearchAsync<object>(elasticSearchRequest)
                 .ConfigureAwait(false);
 
-            var parentsWithFilteredChildren = new List<CustomerSearch> { };
-
+            var parentsWithFilteredChildren = new List<DynamicResponse> { };
             if (response.Hits.Any())
             {
                 foreach (IHit<object> hit in response.Hits.ToList())
                 {
                     var source = hit.Source as Dictionary<string, object>;
-                    var dynamicSearchResponse = new CustomerSearch();
+                    var dynamicSearchResponse = new DynamicResponse();
 
                     source.Keys.ToList().ForEach((key) =>
                     {
@@ -151,17 +152,100 @@ namespace QueryEditor.Services.ElasticSearch
             return parentsWithFilteredChildren;
         }
 
+        public virtual async Task<DynamicResponse> AggregateAsync(
+           ElasticClient elasticClient,
+           SearchReq searchRequest,
+           AggregationRequest aggregationRequest)
+        {
+            var elasticSearchRequest = ConstructAggregationRequest(
+                   elasticClient,
+                   searchRequest,
+                   aggregationRequest);
 
-        public static SearchRequest<CustomerSearch> ConstructSearchRequest(
+            var response = await elasticClient
+                .SearchAsync<object>(elasticSearchRequest)
+                .ConfigureAwait(false);
+
+            var aggregationResult = GetAggregationResult(aggregationRequest, response);
+
+            return aggregationResult;
+        }
+
+        private static DynamicResponse GetAggregationResult(
+            AggregationRequest aggregationRequest,
+            ISearchResponse<object> searchResponse)
+        {
+            var response = new DynamicResponse { };
+
+            const string count = "count";
+            const string max = "max";
+            const string min = "min";
+            const string average = "average";
+            const string sum = "sum";
+
+            if (aggregationRequest == null)
+            {
+                return response;
+            }
+
+            var aggregationsResult = searchResponse.Aggregations;
+            var aggregationName = aggregationRequest.FieldToAggregateBy;
+            switch (aggregationRequest.AggregationType)
+            {
+                case (AggregationType.Count):
+                    response[count] = aggregationsResult
+                                            .ValueCount(aggregationName).Value;
+                    break;
+                case (AggregationType.Sum):
+                    response[sum] = aggregationsResult
+                                            .Sum(aggregationName).Value;
+                    break;
+                case (AggregationType.Average):
+                    response[average] = aggregationsResult
+                                        .Average(aggregationName).Value;
+                    break;
+                case (AggregationType.Min):
+                    response[min] = aggregationsResult
+                                        .Min(aggregationName).Value;
+                    break;
+                case (AggregationType.Max):
+                    response[max] = aggregationsResult
+                                        .Max(aggregationName).Value;
+                    break;
+                case (AggregationType.Stats):
+                    var stats = aggregationsResult
+                                        .Stats(aggregationName);
+                    response[count] = stats.Count;
+                    response[sum] = stats.Sum;
+                    response[average] = stats.Average;
+                    response[min] = stats.Min;
+                    response[max] = stats.Max;
+                    break;
+                case (AggregationType.GroupBy):
+                    var buckets = searchResponse.Aggregations
+                            .Terms(aggregationName).Buckets;
+                    foreach (var bucket in buckets)
+                    {
+                        response[bucket.Key] = bucket.DocCount;
+                    }
+                    break;
+                default:
+                    break;
+            }
+
+            return response;
+        }
+
+        public static SearchRequest<DynamicResponse> ConstructSearchRequest(
             ElasticClient elasticClient,
             SearchReq searchRequest)
         {
-            var elasticSearchRequest = new SearchRequest<CustomerSearch>
+            var elasticSearchRequest = new SearchRequest<DynamicResponse>
             {
                 //// TODO: Handle the scenario where there is an int overflow.
                 From = searchRequest.From.HasValue ? (int)searchRequest.From
                     : (int)((searchRequest.PageNumber - 1) * searchRequest.PageSize),
-                Size = searchRequest.PageSize == 0 ? null : (int?)searchRequest.PageSize,
+                Size = searchRequest.PageSize == 0 ? null : (int?)searchRequest.PageSize
             };
 
             var fields = AddFieldsToInclude(searchRequest, elasticSearchRequest);
@@ -178,7 +262,7 @@ namespace QueryEditor.Services.ElasticSearch
 
             using (var stream = new MemoryStream())
             {
-                elasticClient.RequestResponseSerializer.Serialize<SearchRequest<CustomerSearch>>(elasticSearchRequest, stream);
+                elasticClient.RequestResponseSerializer.Serialize<SearchRequest<DynamicResponse>>(elasticSearchRequest, stream);
                 stream.Position = 0;
 
                 using var reader = new StreamReader(stream);
@@ -186,6 +270,161 @@ namespace QueryEditor.Services.ElasticSearch
             }
 
             return elasticSearchRequest;
+        }
+        
+        public static SearchRequest<DynamicResponse> ConstructAggregationRequest(
+            ElasticClient elasticClient,
+            SearchReq searchRequest,
+            AggregationRequest aggregationRequest)
+        {
+            var elasticSearchRequest = new SearchRequest<DynamicResponse>
+            {
+                From = searchRequest.From.HasValue ? (int)searchRequest.From
+                    : (int)((searchRequest.PageNumber - 1) * searchRequest.PageSize),
+                Size = searchRequest.PageSize == 0 ? null : (int?)searchRequest.PageSize,
+                Aggregations = GetAggregations(aggregationRequest),
+                Source = false,
+            };
+
+            var fields = AddFieldsToInclude(searchRequest, elasticSearchRequest);
+
+            elasticSearchRequest.Query = ConstructSearchQuery(
+                searchRequest.Query,
+                searchRequest.Fields,
+                searchRequest.Filters,
+                fields);
+
+            AddSorting(searchRequest, elasticSearchRequest);
+            string json = JsonSerializer.Serialize(searchRequest.Filters[0]);
+            string requestJson = string.Empty;
+
+            using (var stream = new MemoryStream())
+            {
+                elasticClient.RequestResponseSerializer.Serialize<SearchRequest<DynamicResponse>>(elasticSearchRequest, stream);
+                stream.Position = 0;
+
+                using var reader = new StreamReader(stream);
+                requestJson = reader.ReadToEnd();
+            }
+
+            return elasticSearchRequest;
+        }
+        
+
+        private static AggregationDictionary GetAggregations(
+            AggregationRequest aggregationRequest)
+        {
+            var aggregations = new AggregationDictionary { };
+            if (aggregationRequest == null)
+            {
+                return aggregations;
+            }
+
+            var aggregateByPropertyName = aggregationRequest.FieldToAggregateBy;
+
+
+            switch (aggregationRequest.AggregationType)
+            {
+                case (AggregationType.Count):
+                    {
+                        aggregations.Add(
+                           aggregateByPropertyName,
+                           new AggregationContainer
+                           {
+                               ValueCount = new ValueCountAggregation(
+                                   aggregateByPropertyName,
+                                   aggregateByPropertyName)
+                           });
+                        break;
+                    }
+                case (AggregationType.Sum):
+                    {
+                        aggregations.Add(
+                           aggregateByPropertyName,
+                           new AggregationContainer
+                           {
+                               Sum = new SumAggregation(
+                                   aggregateByPropertyName,
+                                   aggregateByPropertyName)
+                           });
+                        break;
+                    }
+                case (AggregationType.Min):
+                    {
+                        aggregations.Add(
+                           aggregateByPropertyName,
+                           new AggregationContainer
+                           {
+                               Min = new MinAggregation(
+                                   aggregateByPropertyName,
+                                    aggregateByPropertyName),
+                           });
+                        break;
+                    }
+                case (AggregationType.Max):
+                    {
+                        aggregations.Add(
+                           aggregateByPropertyName,
+                           new AggregationContainer
+                           {
+                               Max = new MaxAggregation(
+                                   aggregateByPropertyName,
+                                    aggregateByPropertyName),
+                           });
+                        break;
+                    }
+                case (AggregationType.Average):
+                    {
+                        aggregations.Add(
+                           aggregateByPropertyName,
+                           new AggregationContainer
+                           {
+                               Average = new AverageAggregation(
+                               aggregateByPropertyName,
+                                    aggregateByPropertyName
+                               )
+                           });
+                        break;
+                    }
+                case (AggregationType.GroupBy):
+                    {
+                        aggregations.Add(
+                           aggregateByPropertyName,
+                          (aggregationRequest.KeysToReturn != null && aggregationRequest.KeysToReturn.Any())
+                          ? new AggregationContainer
+                          {
+                              Terms = new TermsAggregation(aggregateByPropertyName)
+                              {
+                                  Field = aggregateByPropertyName,
+                                  Include = new TermsInclude(aggregationRequest.KeysToReturn),
+                                  Size = 100
+                              },
+                          }
+                                : new TermsAggregation(aggregateByPropertyName)
+                                {
+                                    Field = aggregateByPropertyName,
+                                    Size = 100
+                                });
+                        break;
+                    }
+                case (AggregationType.Stats):
+                    {
+                        aggregations.Add(
+                           aggregateByPropertyName,
+                            new AggregationContainer
+                            {
+                                Stats = new StatsAggregation(
+                                    aggregateByPropertyName,
+                                    aggregationRequest.FieldToAggregateBy)
+                            });
+                        break;
+                    }
+                default:
+                    break;
+
+            }
+
+            return aggregations;
         }
 
         private static void AddSorting(SearchReq searchRequest, Nest.SearchRequest elasticSearchRequest)
@@ -283,7 +522,7 @@ namespace QueryEditor.Services.ElasticSearch
                 filtersWithMustCondition.AddRange(
                     AddFilters(
                         searchText,
-                        searchFields,fields));
+                        searchFields, fields));
             }
 
             foreach (var filterGroup in filterGroups)
@@ -330,13 +569,13 @@ namespace QueryEditor.Services.ElasticSearch
                 return null;
             }
 
-            var mappings = elastic.Indices.GetMapping<CustomerSearch>();
+            var mappings = elastic.Indices.GetMapping<DynamicResponse>();
             if (!mappings.IsValid)
             {
                 return null;
             }
 
-            var mapping = mappings.Indices["18455014ef7f413c8be61acca225d24e-customers"].Mappings;
+            var mapping = mappings.Indices[IndexName].Mappings;
             if (mapping == null)
             {
                 return null;
@@ -454,7 +693,8 @@ namespace QueryEditor.Services.ElasticSearch
 
             while (current != null)
             {
-                stack.Add(((PropertyInfo)current.Member).Name);
+                var name = JsonNamingPolicy.CamelCase.ConvertName(((PropertyInfo)current.Member).Name);
+                stack.Add(name);
 
                 if (current.Expression is MemberExpression)
                 {
@@ -469,7 +709,7 @@ namespace QueryEditor.Services.ElasticSearch
             return string.Join('.', stack);
         }
 
-        public static async Task<List<CustomerSearch>> SearchAsync(ElasticClient elasticClient)
+        public static async Task<List<DynamicResponse>> SearchAsync(ElasticClient elasticClient)
         {
             var request = new Nest.SearchRequest<object>
             {
@@ -529,14 +769,14 @@ namespace QueryEditor.Services.ElasticSearch
             var response = await elasticClient.SearchAsync<object>(request);
 
             var parents = response.Hits.Select(_ => _.Source).ToList();
-            var parentsWithFilteredChildren = new List<CustomerSearch> { };
+            var parentsWithFilteredChildren = new List<DynamicResponse> { };
 
             var sourceType = response.Hits.GetType().GetGenericArguments().Single();
 
             foreach (IHit<object> hit in response.Hits.ToList())
             {
                 var source = hit.Source as Dictionary<string, object>;
-                var customer = new CustomerSearch();
+                var customer = new DynamicResponse();
                 source.Keys.ToList().ForEach((key) =>
                 {
                     customer.SetProperty(key, source[key]);
@@ -635,7 +875,8 @@ namespace QueryEditor.Services.ElasticSearch
         {
             if (searchFields != null && searchFields.Any())
             {
-                return new BoolQuery {
+                return new BoolQuery
+                {
                     Must = AddFilters(filterDefinitions, LogicalOperator.AND, fields),
                     Should = AddFilters(
                         searchText,
@@ -644,7 +885,8 @@ namespace QueryEditor.Services.ElasticSearch
                 };
             }
 
-            return new BoolQuery { 
+            return new BoolQuery
+            {
                 Must = AddFilters(filterDefinitions, LogicalOperator.AND, fields)
             };
         }
@@ -847,6 +1089,7 @@ namespace QueryEditor.Services.ElasticSearch
                     else
                     {
                         nestedQueryMetadata.Add(_);
+                        break;
                     }
                 }
             });
