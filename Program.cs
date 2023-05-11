@@ -11,6 +11,11 @@ using System.Linq;
 using Newtonsoft.Json;
 using System.Text;
 using ElasticSearchSearchEnhancement.Models.Search;
+using System.Linq.Expressions;
+using System.Reflection;
+using Kovai.Churn360.Customers.Core.Models;
+using System.Globalization;
+using Newtonsoft.Json.Linq;
 
 namespace QueryEditor
 {
@@ -22,20 +27,147 @@ namespace QueryEditor
             ElasticSearchService elasticSearch = new ElasticSearchService();
             ElasticSearchService.IndexMapping = ElasticSearchService.GetMapping(elasticClient);
 
-            var searchRequest = new SearchReq
+            var customerCampaignResponsePath = GetPropertyName<CustomerSearch>(
+                    customer => customer.Contacts) + "." + GetPropertyName<CustomerContact>(
+                    contact => contact.Campaigns) + "." + GetPropertyName<CustomerContactCampaign>(
+                    campaign => campaign.RespondedOn);
+
+            var usageFilterDefinition = new FilterGroup
             {
-                Filters = new List<IFilterDefinition> {
+                LogicalOperator = LogicalOperator.AND,
+                Filters = new List<IFilterDefinition>
+                {
                     new FilterDefinition
-                        {
-                            Field = "revenueGenerationPotential",
-                            LogicalOperator = LogicalOperator.OR,
-                            Values = new List<string> { "10000", "200000" },
-                            FindExactMatches = false,
-                            FilterType = FilterTypes.Range
+                    {
+                        Field = "usage.features.name",
+                        FilterType = FilterTypes.Equals,
+                        Value = "campaigns"
                     },
-                }
+                    new FilterDefinition
+                    {
+                        Field = "usage.features.lastRecorded",
+                        FilterType = FilterTypes.LessThanOrEqualToXDayFromToday,
+                        Value = 10
+                    },
+                },
             };
 
+            var searchRequest = new SearchReq
+            {
+                Filters = new List<FilterDefinition>
+                {
+                    new FilterDefinition
+                    {
+                        Field = "usage.features.name",
+                        FilterType = FilterTypes.Equals,
+                        FindExactMatches = true,
+                        Value = "campaigns"
+                    },
+                    new FilterDefinition
+                    {
+                        Field = "usage.features.lastRecorded",
+                        FilterType = FilterTypes.LessThanOrEqualToXDayFromToday,
+                        Value = 10
+                    },
+                },
+                PageSize = 0,
+            };
+
+            var getLookupSubsctitutedConfig = GetOptionsSubstitutedWithLookupOptions(
+                @"{
+                ""features"": {
+                    ""name"": ""Features"",
+                    ""value"": ""features"",
+                    ""type"": ""multiPart"",
+                    ""filterPartConfigs"": [
+                        {
+                            ""identifier"": ""feature.query"",
+                            ""type"": ""features:lookup:1"",
+                            ""options"": ""featureId:lookupOptions:1""
+                        },
+                        {
+                            ""identifier"": ""subQuery"",
+                            ""type"": ""dropDown"",
+                            ""options"": [
+                                {
+                                    ""label"": ""was used"",
+                                    ""value"": ""wasUsed""
+                                },
+                                {
+                                    ""label"": ""was never used"",
+                                    ""value"": ""wasNeverUsed""
+                                },
+                                {
+                                    ""label"": ""was not used in the last"",
+                                    ""value"": ""wasNotUsedInTheLastXDays"",
+                                    ""children"": [
+                                        {
+                                            ""identifier"": ""feature.query"",
+                                            ""type"": ""number""
+                                        },
+                                        {
+                                            ""type"": ""text"",
+                                            ""text"": ""days""
+                                        }
+                                    ]
+                                },
+                                {
+                                    ""label"": ""was used in the last"",
+                                    ""value"": ""wasUsedInTheLastXDays"",
+                                    ""children"": [
+                                        {
+                                            ""identifier"": ""feature.query"",
+                                            ""type"": ""number""
+                                        },
+                                        {
+                                            ""type"": ""text"",
+                                            ""text"": ""days""
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    ]
+                }
+            }");
+
+            var convertedRequest = ElasticSearchService.ConstructSearchRequest(
+                            elasticClient,
+                            searchRequest);
+
+            var deserialised = JsonConvert.DeserializeObject<List<FilterDefinition>>("[{\"field\":\"customFields.texts.id\",\"type\":\"filterDefinition\",\"logicalOperator\":1,\"filterType\":6,\"value\":\"3FA25452-6BD7-458D-818B-A303CA4C8E88\",\"values\":\"\", \"findExactMatches\":\"true\"},{\"field\":\"customFields.texts.value\",\"type\":\"filterDefinition\",\"logicalOperator\":1,\"filterType\":3,\"value\":\"Space\",\"values\":\"\"}]");
+
+
+            //searchRequest.FieldsToReturn = new List<string> { "contacts", "contacts.campaigns" };
+
+            //var fields = new List<string>
+            //{
+            //    "contacts.firstName",
+            //    "contacts.lastName",
+            //    "contacts.email",
+            //};
+            //var fieldsToRetrieveOnResponse = new List<string>
+            //{
+            //    "contacts",
+            //    "id",
+            //    "name",
+            //    "contacts.campaigns"
+            //};
+            //searchRequest.Fields = fields;
+            //searchRequest.FieldsToReturn = fieldsToRetrieveOnResponse;
+
+            //var model = new SearchReq();
+
+            //model.Filters.Add(new FilterDefinition
+            //{
+            //    Field = "contacts.shield",
+            //    LogicalOperator = LogicalOperator.AND,
+            //    Value = "Others",
+            //    FindExactMatches = false,
+            //});
+
+            //model.FieldsToReturn = new List<string> { "contacts.shield", "contacts.id" };
+            //var result = await elasticSearch.ComplexSearchAsync(elasticClient, model);
             //var aggregationRequest = new AggregationRequest
             //{
             //    FieldToAggregateBy = "industryId",
@@ -44,9 +176,90 @@ namespace QueryEditor
             ///Get AggregationReq sep or get searchreq child named complexSearchReq
             ///Separate metohd for aggregation with aggregation as separate param, source false
 
-            var response = await elasticSearch.ComplexSearchAsync(
-                elasticClient,
-                searchRequest);
+            //var aggResp = await elasticSearch.AggregateAsync(
+            //    elasticClient,
+            //    searchRequest,
+            //    aggregationRequest);
+            searchRequest.Filters = deserialised;
+
+            var searchResp = await elasticSearch.ComplexSearchAsync(elasticClient, searchRequest);
+        }
+
+        public static string GetOptionsSubstitutedWithLookupOptions(string queryBuilderInputConfig)
+        {
+            var typeKey = "type";
+            var lookupTypePattern = "lookup:";
+            var filterPartConfigsKey = "filterPartConfigs";
+            var filterPartConfigOptionsKey = "options";
+            var keyDelimitter = ":";
+
+            var multiSelectTypeKey = "multiSelect";
+
+            var parsedConfig = JObject.Parse(queryBuilderInputConfig);
+
+            foreach (var configName in parsedConfig.Properties().Select(item => item.Name))
+            {
+                var config = parsedConfig[configName];
+                var filterPartConfigs = config[filterPartConfigsKey];
+
+                foreach (var filterPartConfig in filterPartConfigs)
+                {
+                    var type = filterPartConfig[typeKey].ToString();
+                    if (type.Contains(lookupTypePattern))
+                    {
+                        var keyToSubstituteMultiSelectType = type;
+                        var keyToSubstituteOptions = filterPartConfig[filterPartConfigOptionsKey].ToString();
+
+                        var lookupKey = keyToSubstituteOptions.Split(keyDelimitter)[0];
+
+                        // TODO: enhance the following to get dynamic list of multiselect options rather than only features
+
+                        queryBuilderInputConfig = queryBuilderInputConfig.Replace(keyToSubstituteMultiSelectType, multiSelectTypeKey);
+                        queryBuilderInputConfig = queryBuilderInputConfig.Replace($"\"{keyToSubstituteOptions}\"", new JArray().ToString());
+                    }
+                }
+            }
+
+            var parsed = JObject.Parse(queryBuilderInputConfig);
+            return queryBuilderInputConfig;
+        }
+
+        public static string GetPropertyName<T>(Expression<Func<T, object>> property)
+        {
+            List<string> stack = new List<string>();
+            LambdaExpression lambda = (LambdaExpression)property;
+            MemberExpression memberExpression;
+
+
+            if (lambda.Body is UnaryExpression)
+            {
+                UnaryExpression unaryExpression = (UnaryExpression)(lambda.Body);
+                memberExpression = (MemberExpression)(unaryExpression.Operand);
+            }
+            else
+            {
+                memberExpression = (MemberExpression)(lambda.Body);
+            }
+
+            var current = memberExpression;
+
+
+            while (current != null)
+            {
+                stack.Add(((PropertyInfo)current.Member).Name);
+
+                if (current.Expression is MemberExpression)
+                {
+                    current = (MemberExpression)current.Expression;
+                }
+                else
+                {
+                    current = null;
+                }
+            }
+            stack.Reverse();
+            var result = string.Join('.', stack);
+            return char.ToLowerInvariant(result[0]) + result.Substring(1);
         }
     }
 }

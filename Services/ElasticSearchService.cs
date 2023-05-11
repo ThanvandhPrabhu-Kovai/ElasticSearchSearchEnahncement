@@ -9,6 +9,7 @@ using System.IO;
 using ElasticSearchSearchEnhancement.Models;
 using SearchReq = ElasticSearchSearchEnhancement.Models.SearchRelatedTemplates.SearchRequest;
 using DateRan = ElasticSearchSearchEnhancement.Models.Search.DateRange;
+using DynamicResponse = Kovai.Churn360.Customers.Core.Models.DynamicResponse;
 using ElasticSearchSearchEnhancement.Models.SearchRelatedTemplates;
 using Kovai.Churn360.Customers.Core.Models;
 using System.Globalization;
@@ -16,6 +17,8 @@ using System.Collections;
 using ElasticNet = Elasticsearch.Net;
 using System.Text.Json;
 using ElasticSearchSearchEnhancement.Models.Search;
+using Newtonsoft.Json;
+using Elasticsearch.Net;
 
 namespace QueryEditor.Services.ElasticSearch
 {
@@ -103,25 +106,29 @@ namespace QueryEditor.Services.ElasticSearch
            ElasticClient elasticClient,
            SearchReq searchRequest)
         {
+
             var elasticSearchRequest = ConstructSearchRequest(
                    elasticClient,
                    searchRequest);
+
+            var serialised = elasticClient.RequestResponseSerializer.SerializeToString(elasticSearchRequest);
 
             var response = await elasticClient
                 .SearchAsync<object>(elasticSearchRequest)
                 .ConfigureAwait(false);
 
             var parentsWithFilteredChildren = new List<DynamicResponse> { };
+            var parentsWithFilteredChildrenH = new List<string> { };
             if (response.Hits.Any())
             {
                 foreach (IHit<object> hit in response.Hits.ToList())
                 {
-                    var source = hit.Source as Dictionary<string, object>;
+                    var source = hit.Source as Dictionary<string, object>;////customer
                     var dynamicSearchResponse = new DynamicResponse();
 
                     source.Keys.ToList().ForEach((key) =>
                     {
-                        dynamicSearchResponse.SetProperty(key, source[key]);
+                        dynamicSearchResponse.SetProperty(key, source[key]);////Unfiltered contacts
                     });
 
                     var currentInnerHits = hit.InnerHits;
@@ -132,10 +139,21 @@ namespace QueryEditor.Services.ElasticSearch
 
                         currentInnerHits.ToList().ForEach((innerHit) =>
                         {
+                            var pathSplit = innerHit.Key.Split('.');
+                            pathSplit.ToList().ForEach((path) =>
+                            {
+                                if (dynamicSearchResponse.Get().ContainsKey(path))
+                                {
+                                    var parent = JsonConvert.DeserializeObject<List<object>>(
+                                        JsonConvert.SerializeObject(dynamicSearchResponse.Get()[path]));
+                                    var parse = String.Join(",", parent);
+                                }
+                            });
                             var innerHitsValues = innerHit.Value.Hits.Hits.Select(_ =>
                             {
                                 nestedInnerHits = _.InnerHits;
-                                return _.Source.As<object>();
+                                var obje = _.Source.As<object>();
+                                return obje;
                             }).ToList<object>();
 
                             dynamicSearchResponse[innerHit.Key] = innerHitsValues;
@@ -146,9 +164,10 @@ namespace QueryEditor.Services.ElasticSearch
                     while (currentInnerHits != null);
 
                     parentsWithFilteredChildren.Add(dynamicSearchResponse);
+                    parentsWithFilteredChildrenH.Add(dynamicSearchResponse.ToJson());
                 }
             }
-
+            var json = String.Join(",", parentsWithFilteredChildrenH);
             return parentsWithFilteredChildren;
         }
 
@@ -271,7 +290,7 @@ namespace QueryEditor.Services.ElasticSearch
 
             return elasticSearchRequest;
         }
-        
+
         public static SearchRequest<DynamicResponse> ConstructAggregationRequest(
             ElasticClient elasticClient,
             SearchReq searchRequest,
@@ -295,7 +314,7 @@ namespace QueryEditor.Services.ElasticSearch
                 fields);
 
             AddSorting(searchRequest, elasticSearchRequest);
-            string json = JsonSerializer.Serialize(searchRequest.Filters[0]);
+            string json = JsonConvert.SerializeObject(searchRequest.Filters[0]);
             string requestJson = string.Empty;
 
             using (var stream = new MemoryStream())
@@ -309,7 +328,7 @@ namespace QueryEditor.Services.ElasticSearch
 
             return elasticSearchRequest;
         }
-        
+
 
         private static AggregationDictionary GetAggregations(
             AggregationRequest aggregationRequest)
@@ -632,6 +651,11 @@ namespace QueryEditor.Services.ElasticSearch
             {
                 previousParentPath = currentPath;
                 currentPath = (currentPath != null ? currentPath + "." : currentPath) + part;
+
+                if (properties == null)
+                {
+                    break;
+                }
 
                 var propertyInfo = properties.ContainsKey(part)
                     ? properties[part]

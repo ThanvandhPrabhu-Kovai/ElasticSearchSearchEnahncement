@@ -171,17 +171,35 @@ namespace QueryEditor.Services.ElasticSearch
 
         internal static QueryContainer ConstructDateRangeFilter(FilterDefinition filter)
         {
-            CultureInfo culture = new CultureInfo("pt-BR");
-            var greaterThanOrEqualToDate = DateTime.Parse(filter.Values.ElementAt(0)).ToString("d", culture);
-            var lessThanOrEqualToDate = DateTime.Parse(filter.Values.ElementAt(1)).ToString("d", culture);
+            string format = "MM/dd/yyyy";
+            if (filter.Values.Count != 2)
+            {
+                throw new ArgumentException("A date range filter requires two values.");
+            }
 
-            return new DateRangeQuery
+            var dateFilter = new DateRangeQuery
             {
                 Field = new Field(filter.Field),
-                Format = "MM/dd/yyyy",
-                GreaterThanOrEqualTo = greaterThanOrEqualToDate,
-                LessThanOrEqualTo = lessThanOrEqualToDate,
+                Format = format,
+                GreaterThanOrEqualTo = FormatDate(filter.Values.ElementAt(0), format),
+                LessThanOrEqualTo = FormatDate(filter.Values.ElementAt(1), format),
             };
+            return dateFilter;
+        }
+
+        private static string FormatDate(string dateString, string format)
+        {
+            string formattedString;
+
+            if (DateTime.TryParse(dateString, out DateTime startDate) == true)
+            {
+                formattedString = startDate.ToString(format);
+            }
+            else
+            {
+                formattedString = dateString;
+            }
+            return formattedString;
         }
 
         internal static QueryContainer ConstructTermsFilter(string field, List<string> filterValues)

@@ -11,7 +11,7 @@ namespace ElasticSearchSearchEnhancement.Models.SearchRelatedTemplates
         {
             this.Fields = new List<string>();
             this.SortBy = new List<SortByDefinition>();
-            this.Filters = new List<IFilterDefinition>();
+            this.Filters = new List<FilterDefinition>();
             this.PageNumber = 1;
             this.PageSize = 10;
         }
@@ -20,7 +20,7 @@ namespace ElasticSearchSearchEnhancement.Models.SearchRelatedTemplates
 
         public List<SortByDefinition> SortBy { get; set; }
 
-        public List<IFilterDefinition> Filters { get; set; }
+        public List<FilterDefinition> Filters { get; set; }
 
         public int PageSize { get; set; }
 
