@@ -1,4 +1,5 @@
 ﻿using Kovai.Churn360.Customers.Core.Models;
+using Nest;
 using QueryEditor.Models;
 using System;
 using System.Collections.Generic;
@@ -54,6 +55,8 @@ namespace ElasticSearchSearchEnhancement.Models.Search
         public TaskSummary Tasks { get; set; }
 
         public CustomerSentimentSummary Sentiment { get; set; }
+
+        public JoinField UsageJoinField { get; set; } 
 
         //public UsageSummary Usage { get; set; }
 

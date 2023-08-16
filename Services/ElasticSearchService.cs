@@ -19,6 +19,9 @@ using System.Text.Json;
 using ElasticSearchSearchEnhancement.Models.Search;
 using Newtonsoft.Json;
 using Elasticsearch.Net;
+using ElasticSearchSearchEnhancement.Models.ParentChild;
+using static Nest.JoinField;
+using System.Security.Cryptography;
 
 namespace QueryEditor.Services.ElasticSearch
 {
@@ -28,7 +31,7 @@ namespace QueryEditor.Services.ElasticSearch
 
         private const string ElasticSearchClusterUri = "http://localhost:9200";
 
-        private const string IndexName = "18455014ef7f413c8be61acca225d24e-customers";
+        private const string IndexName = "0000-0000-0000-0000-customers-thanvandh-1";
 
         private static ConnectionSettings GetElasticSearchConnectionSettings(ElasticNet.StaticConnectionPool connectionPool) => new ConnectionSettings(connectionPool)
                                                   .DisableDirectStreaming()
@@ -47,6 +50,69 @@ namespace QueryEditor.Services.ElasticSearch
             elasticClient = new ElasticClient(GetElasticSearchConnectionSettings(connectionPool));
 
             return elasticClient;
+        }
+
+        public static async Task IndexParentDocumentAsync(
+            ElasticClient elasticClient)
+        {
+           var response = await elasticClient.IndexDocumentAsync<CustomerSearch>(
+                new CustomerSearch
+                {
+                    Id = 10,
+                    Name = "Customer10",
+                    UsageJoinField = "customersdata",
+                });
+        }
+
+        public static async Task IndexChildDocumentAsync(
+            ElasticClient elasticClient,
+            string parentId)
+        {
+            if (string.IsNullOrEmpty(parentId))
+            {
+                throw new ArgumentNullException();
+            }
+
+            var childId = Guid.NewGuid();
+
+            var data = new UsageData
+            {
+                UsageJoinField = JoinField.Link<UsageData>(parentId: parentId),
+                CustomerId = 11,
+                ChildIdentifier = childId.ToString()
+            };
+
+            var response = await elasticClient.IndexAsync(
+                data,
+                settings => settings
+                    .Id(childId)
+                    .Routing(new Routing(parentId)));
+
+            if (!response.IsValid)
+            {
+                throw new Exception(
+                        "Could not upsert document on index. Inner Exception: " + JsonConvert.SerializeObject(response),
+                        response.OriginalException);
+            }
+
+            if (response == null || response.IsValid == false)
+            {
+                throw new Exception();
+            }
+        }
+
+        public static async Task UpdateChildDocumentAsync(
+            ElasticClient elasticClient,
+            string parentId)
+        {
+            var response = await elasticClient.UpdateByQueryAsync<UsageData>(
+                query => query
+                .Query(
+                    queryDescriptor => queryDescriptor.ParentId(parentIdQuery => 
+                            parentIdQuery
+                                .Id(parentId)
+                                .Type(typeof(UsageData).Name.ToLower())))
+                .Script(script => script.Source("ctx._source['childIdentifier'] = ctx['_id']")));
         }
 
         public virtual async Task<IEnumerable<DynamicResponse>> SearchThroughNestedObjectsAsync(
@@ -106,7 +172,6 @@ namespace QueryEditor.Services.ElasticSearch
            ElasticClient elasticClient,
            SearchReq searchRequest)
         {
-
             var elasticSearchRequest = ConstructSearchRequest(
                    elasticClient,
                    searchRequest);
@@ -588,13 +653,21 @@ namespace QueryEditor.Services.ElasticSearch
                 return null;
             }
 
-            var mappings = elastic.Indices.GetMapping<DynamicResponse>();
+            var mappings = elastic.Indices.GetMapping<CustomerSearch>();
             if (!mappings.IsValid)
             {
                 return null;
             }
 
-            var mapping = mappings.Indices[IndexName].Mappings;
+            var key = mappings.Indices.Keys.First();
+
+            if (string.IsNullOrEmpty(key?.Name))
+            {
+                return null;
+            }
+
+            var mapping = mappings.Indices[key].Mappings;
+
             if (mapping == null)
             {
                 return null;
